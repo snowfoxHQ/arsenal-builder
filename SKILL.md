@@ -81,9 +81,25 @@ Two resolution rules, and that is the whole contract:
 | `prompt_file` (code) | the **skill** dir `skills\arsenal-builder\` | `PROMPT.md` |
 | `project_dir`, `out_dir` (data) | the **root** `%ARSENAL_HOME%` | `workspaces/vecRecall`, `reports/arsenal` |
 
-The root comes from `--root`, then `$ARSENAL_HOME`, then the package directory
-(for a quick standalone try). Set it once as a user environment variable and
-every invocation resolves correctly from any cwd.
+The root comes from, in order:
+
+1. `--root <dir>`
+2. `$ARSENAL_HOME`
+3. **the directory layout**: this package sits at `<root>\skills\arsenal-builder\`,
+   so the root is two levels up
+4. the package directory itself (a quick standalone try)
+
+Rule 3 is the important one: **moving the whole folder requires editing nothing**.
+Move `C:\ai-arsenal` to `D:\arena` and the root becomes `D:\arena`, because the
+constraint is geometric (the parent of `skills`), not a string constant. The
+environment variable is therefore optional, not required:
+
+```bat
+setx ARSENAL_HOME "C:\ai-arsenal"    :: optional, just a shortcut
+```
+
+`runner.py --print-home` prints the root it actually resolved, and
+`start_arsenal.bat` uses that instead of guessing how many levels up `%~dp0` is.
 
 Why they must be separate: reports written inside the package are deleted the
 next time you unzip a new version over the old one. Same reason `config.json`
@@ -233,16 +249,21 @@ confidence.
 
 ## Verifying an install
 
-`runner.py` ships with a self-test that exercises the gate against seventeen
-scenarios without touching a real sandbox — thirteen verdict/evidence cases, one path-contract check, one sandbox-binding check, one that
-checks a run leaves `summary.json` / `agent.log` / the sandbox output behind,
-plus two that check the preflight refuses an unusable `project_dir`:
+`runner.py` ships with a self-test that exercises the gate against nineteen
+scenarios without touching a real sandbox — eleven verdict cases (pass, tests
+failed, deps blocked, missing result, inconsistent counts, zero tests, crashed
+agent, garbage JSON, non-UTF8 output, wrong commit, abbreviated commit), four
+contract checks (a run must leave `summary.json` / `agent.log` / the sandbox
+output behind, the data/code path split, the root inferred from the layout, and
+a fully rendered prompt with no leftover `{{PLACEHOLDER}}`, and unique run
+ directories), one sandbox-binding
+check, and two that check the preflight refuses an unusable `project_dir`:
 
 ```
 python templates/selftest.py
 ```
 
-All seventeen must report `ok`. If any reports `MISMATCH`, the gate is broken — do
+All nineteen must report `ok`. If any reports `MISMATCH`, the gate is broken — do
 not trust its PASS verdicts.
 
 ## Uninstall

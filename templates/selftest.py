@@ -220,8 +220,16 @@ def check_home_resolution(_run_dir=None):
         if runner.resolve_from_home(absolute, "X:/elsewhere") != absolute:
             problems.append("an absolute out_dir was rewritten")
 
-        previous = os.environ.get(runner.HOME_ENV)
+        previous = os.environ.pop(runner.HOME_ENV, None)
         try:
+            # With nothing configured, the layout (or the skill dir standalone)
+            # decides - never a path written into the source.
+            expected = runner.home_from_layout() or runner.BASE_DIR
+            if os.path.normcase(runner.resolve_home()) != os.path.normcase(expected):
+                problems.append(
+                    "with no root set, home must fall back to the layout or the skill dir"
+                )
+
             os.environ[runner.HOME_ENV] = home
             if os.path.normcase(runner.resolve_home()) != os.path.normcase(home):
                 problems.append("$%s was ignored" % runner.HOME_ENV)
@@ -229,16 +237,67 @@ def check_home_resolution(_run_dir=None):
             if os.path.normcase(runner.resolve_home(cli)) != os.path.normcase(cli):
                 problems.append("--root does not win over $%s" % runner.HOME_ENV)
         finally:
-            if previous is None:
-                os.environ.pop(runner.HOME_ENV, None)
-            else:
+            os.environ.pop(runner.HOME_ENV, None)
+            if previous is not None:
                 os.environ[runner.HOME_ENV] = previous
-
-        if os.path.normcase(runner.resolve_home()) != os.path.normcase(runner.BASE_DIR):
-            problems.append("with no root set, home must fall back to the skill dir")
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
+    return (not problems, "; ".join(problems))
+
+
+def check_run_dir_unique(_run_dir=None):
+    """Two runs started in the same second must not share a directory.
+
+    If they do, the second run inherits the first run's result.json and reports a
+    verdict about a test it never executed - the worst failure mode there is,
+    because every number in the report is real, just not this run's.
+    """
+    tmp = tempfile.mkdtemp(prefix="arsenal-rundir-")
+    problems = []
+    try:
+        ids = []
+        for _ in range(3):
+            run_id, path = runner.make_run_dir(tmp, when="20260101-120000")
+            ids.append(run_id)
+            if not os.path.isdir(path):
+                problems.append("run directory was not created: %s" % path)
+        if len(set(ids)) != len(ids):
+            problems.append("same-second run ids collided: %s" % ids)
+        if not ids[0].startswith("20260101-120000"):
+            problems.append("run id lost its timestamp: %s" % ids[0])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return (not problems, "; ".join(problems))
+
+
+def check_layout_home(_run_dir=None):
+    """The root must be readable from the directory tree, not from a constant.
+
+    Someone moves C:\\ai-arsenal to D:\\arsenal and nothing changes: <home>\\skills\\
+    <skill>\\ is still two levels below the root. That only holds if no file
+    hard-codes the old path.
+    """
+    tmp = tempfile.mkdtemp(prefix="arsenal-layout-")
+    problems = []
+    try:
+        home = os.path.join(tmp, "arena")
+        skill = os.path.join(home, "skills", "arsenal-builder")
+        os.makedirs(skill)
+        got = runner.home_from_layout(skill)
+        if got is None or os.path.normcase(got) != os.path.normcase(home):
+            problems.append("layout <home>/skills/<skill> resolved to %r" % got)
+
+        loose = os.path.join(tmp, "loose")
+        os.makedirs(loose)
+        if runner.home_from_layout(loose) is not None:
+            problems.append("a folder that is not inside skills/ claimed a home")
+
+        nested = os.path.join(home, "skills", "arsenal-builder", "templates")
+        if os.path.normcase(runner.home_from_layout(nested) or "") == os.path.normcase(home):
+            problems.append("templates/ was treated as the skill directory")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return (not problems, "; ".join(problems))
 
 
@@ -291,6 +350,20 @@ SCENARIOS = [
         "expect": 0,
         "why": "reports must resolve under ARSENAL_HOME, never inside the skill dir",
         "check": check_home_resolution,
+    },
+    {
+        "name": "home from layout",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 0,
+        "why": "the root must be read off <home>\\skills\\<skill>\\, not hard-coded",
+        "check": check_layout_home,
+    },
+    {
+        "name": "run dirs unique",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 0,
+        "why": "a reused run directory means the verdict comes from a previous run",
+        "check": check_run_dir_unique,
     },
     {
         "name": "prompt fully rendered",
@@ -403,7 +476,12 @@ SCENARIOS = [
 def main():
     root = tempfile.mkdtemp(prefix="arsenal-selftest-")
     previous_key = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    previous_home = os.environ.get(runner.HOME_ENV)
     os.environ["ANTHROPIC_AUTH_TOKEN"] = "sk-selftest-not-a-real-key"
+    # Pin the root at the scratch directory: otherwise last-run.txt and any
+    # stray output land inside the installed skill, which is how the package
+    # ended up shipping a last-run.txt pointing at a deleted temp folder.
+    os.environ[runner.HOME_ENV] = root
     failures = 0
 
     try:
@@ -459,6 +537,10 @@ def main():
             os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
         else:
             os.environ["ANTHROPIC_AUTH_TOKEN"] = previous_key
+        if previous_home is None:
+            os.environ.pop(runner.HOME_ENV, None)
+        else:
+            os.environ[runner.HOME_ENV] = previous_home
         shutil.rmtree(root, ignore_errors=True)
 
 

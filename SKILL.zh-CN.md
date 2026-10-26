@@ -76,12 +76,23 @@ description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台
 | `prompt_file`（代码） | **skill 目录** `skills\arsenal-builder\` | `PROMPT.md` |
 | `project_dir`、`out_dir`（数据） | **根** `%ARSENAL_HOME%` | `workspaces/vecRecall`、`reports/arsenal` |
 
-根从哪来：`--root` > 环境变量 `ARSENAL_HOME` > 本包所在目录（单机试跑）。
-设成用户级环境变量一次，之后从任何目录调都能跑对：
+根从哪来，按优先级：
+
+1. 命令行 `--root <dir>`
+2. 环境变量 `ARSENAL_HOME`
+3. **按目录结构推断**：本包位于 `<根>\skills\arsenal-builder\` → 根就是上面两级
+4. 都没有（随便解压到某个文件夹试跑）→ 退回包自己的目录
+
+第 3 条是关键：**挪走整个文件夹不用改任何文件**。`C:\ai-arsenal` 搬到
+`D:\arena`，根自动变成 `D:\arena`，因为约束是「skills 的上一级」这个几何关系，
+不是某个字符串常量。所以环境变量是可选的，不是必需：
 
 ```bat
-setx ARSENAL_HOME "C:\ai-arsenal"
+setx ARSENAL_HOME "C:\ai-arsenal"    :: 可选，只是让从任意目录调都更快命中
 ```
+
+`runner.py --print-home` 打印它实际认出来的根，`start_arsenal.bat` 就是靠这个
+拿根，而不是靠猜 `%~dp0` 往上数几层。
 
 为什么必须分开：报告若写在包目录里，下一次解压新版本覆盖旧版本，报告就没了。
 同理 `config.json` 放在根而不是包里——升级不该覆盖你的接线。
@@ -106,11 +117,14 @@ templates/
   runner.py             驱动沙箱、拉回结果、决定退出码
   arsenal_contract.py   契约校验（门禁逻辑本体）
   review.py             DeepSeek 顾问式点评（永不影响判定）
-  selftest.py           门禁自检（17 个场景）
+  selftest.py           门禁自检（19 个场景）
 ```
 
 然后 `copy config.example.json ..\..\config.json`，改掉 `project_dir`
 （写相对路径 `workspaces/<repo>` 即可，相对根解析）。
+
+根目录的 `install.bat` 做同样的事，但幂等：建目录、补配置、跑自检，
+反复运行没有副作用。`arsenal.cmd install` 是它的快捷方式。
 
 报告语言由 `report_language` 控制，默认就是中文：
 
@@ -225,8 +239,11 @@ python templates/runner.py --config config.json --collect
 python templates/selftest.py
 ```
 
-十七 个场景必须全部 `ok`——十三判定／留痕用例，加一个路径约定检查、一个沙箱绑定检查，再加
-summary.json / agent.log / 沙箱产物」的留痕检查，再加两个预检拒绝场景。
+十九 个场景必须全部 `ok`——十一个判定用例（通过／测试失败／依赖阻塞／结果缺失／
+计数不符／零用例／Agent 崩溃／JSON 损坏／非 UTF-8 输出／commit 不符／短哈希容错），
+加四个契约检查（运行必须留下 `summary.json`／`agent.log`／沙箱产物、数据与代码的路径
+分离、根能不能从目录结构推出来、渲染后的提示词有无残留 `{{占位符}}`、同一秒两次运行不许共用目录），加一个沙箱
+绑定检查，再加两个预检拒绝场景。
 任何一条 `MISMATCH`，说明门禁坏了——别信它给出的 PASS。
 
 ## 卸载

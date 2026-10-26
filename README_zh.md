@@ -105,7 +105,7 @@ arsenal-builder/
     ├── runner.py             驱动沙箱、拉结果、定退出码
     ├── arsenal_contract.py   契约校验
     ├── review.py             顾问式点评（不影响判定）
-    └── selftest.py           14 场景自检
+    └── selftest.py           19 场景自检
 ```
 
 ## 安全边界（读一遍再上生产）

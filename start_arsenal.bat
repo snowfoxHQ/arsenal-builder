@@ -17,6 +17,7 @@ set PYTHONIOENCODING=utf-8
 set "PYDIR=%~dp0templates"
 
 set "AHOME=%ARSENAL_HOME%"
+if not defined AHOME for /f "usebackq delims=" %%i in (`python "%PYDIR%\runner.py" --print-home`) do set "AHOME=%%i"
 if not defined AHOME set "AHOME=%~dp0"
 if "%AHOME:~-1%"=="\" set "AHOME=%AHOME:~0,-1%"
 
@@ -26,11 +27,12 @@ if not exist "%CONFIG%" set "CONFIG=%~dp0config.json"
 echo ==================================================
 echo  AI Arsenal - sandbox test pipeline
 echo  home: %AHOME%
+echo  code: %~dp0
 echo ==================================================
 
 echo.
 echo [1/2] driving the sandbox and validating the result...
-python "%PYDIR%\runner.py" --config "%CONFIG%" %*
+python "%PYDIR%\runner.py" --config "%CONFIG%" --root "%AHOME%" %*
 set "RC=%errorlevel%"
 
 if "%RC%"=="0" goto :passed
@@ -38,6 +40,17 @@ if "%RC%"=="3" goto :blocked
 goto :failed
 
 :passed
+rem A dry run produced no run directory: reviewing the previous run would be
+rem both misleading and slow (it calls the model API). Stop after preflight.
+echo %* | findstr /i /c:"--dry-run" >nul && (
+    echo.
+    echo ==================================================
+    echo  RESULT: PASS ^(preflight only - nothing was executed^)
+    echo ==================================================
+    set "RC=0"
+    goto :done
+)
+
 echo.
 echo [2/2] advisory review (does not affect the verdict)...
 set "RUNDIR="

@@ -74,6 +74,24 @@ def log(message):
     print("[arsenal] %s" % message, flush=True)
 
 
+def home_from_layout(base=None):
+    """Infer the arsenal home from where this skill physically sits.
+
+    A deployed skill lives at <home>\\skills\\arsenal-builder\\, so the home is
+    two levels up. Reading the root off the directory layout means the pipeline
+    works on a fresh machine with no environment variable set and no absolute
+    path baked into any file: move the whole folder, and it still resolves.
+
+    Returns None when the skill is not inside a skills\\ directory (someone
+    unzipped it into a random folder to try it out).
+    """
+    here = os.path.normpath(base or BASE_DIR)
+    parent = os.path.dirname(here)
+    if os.path.basename(parent).lower() == "skills":
+        return os.path.dirname(parent)
+    return None
+
+
 def resolve_home(cli_root=None):
     """The one root that holds the project, the skill and the reports.
 
@@ -83,13 +101,13 @@ def resolve_home(cli_root=None):
 
     Keeping them separate is what stops a reinstall (unzip a new version over
     the old one) from deleting a month of test reports. Precedence is
-    --root, then $ARSENAL_HOME, then the skill directory itself for people who
-    just unzipped it and want to try it.
+    --root, then $ARSENAL_HOME, then the layout (<home>\\skills\\<skill>\\),
+    then the skill directory itself for people who just unzipped it somewhere.
     """
     for candidate in (cli_root, os.environ.get(HOME_ENV)):
         if candidate:
             return os.path.abspath(candidate)
-    return BASE_DIR
+    return home_from_layout() or BASE_DIR
 
 
 def resolve_from_base(path):
@@ -172,6 +190,28 @@ def preflight(config):
 
     if not os.path.isfile(config["prompt_file"]):
         problems.append("prompt file not found: %s" % config["prompt_file"])
+
+    # An existing sandbox is bound to one host directory for life, so a sandbox
+    # cloned from a different project would test the wrong tree - and every
+    # number in the report would be real, just not about this project. Check it
+    # here, which means --dry-run catches it too, instead of finding out from a
+    # report nobody questions.
+    if mode == "clone" and project_dir and sandbox_exists(config):
+        attached = sandbox_workspace(config)
+        if attached is None:
+            # Cannot tell which tree it is bound to. Not fatal - an unreadable
+            # listing is usually a sleeping Docker daemon - but say so, because
+            # silence here reads as "checked and fine".
+            log(
+                "warning: could not read which directory sandbox %r is bound to"
+                % config["sandbox"]
+            )
+        elif not same_path(attached, project_dir):
+            problems.append(
+                "sandbox %r is bound to %s, but project_dir is %s. A sandbox tests "
+                "one directory for life - run with --recreate to rebuild it."
+                % (config["sandbox"], attached, project_dir)
+            )
 
     return problems
 
@@ -407,6 +447,25 @@ def describe_artifacts(run_dir):
     return rows
 
 
+def make_run_dir(out_dir, when=None):
+    """Allocate a run directory that cannot collide with an earlier run.
+
+    Timestamp to the second is not unique: two runs started in the same second
+    shared a directory, and the later one silently inherited the earlier one's
+    result.json - a verdict about a test that was never run. Suffix instead.
+    """
+    stamp = (when or time.strftime("%Y%m%d-%H%M%S")).replace(":", "-")
+    run_id = stamp
+    run_dir = os.path.join(out_dir, run_id)
+    suffix = 2
+    while os.path.exists(run_dir):
+        run_id = "%s-%d" % (stamp, suffix)
+        run_dir = os.path.join(out_dir, run_id)
+        suffix += 1
+    os.makedirs(run_dir, exist_ok=False)
+    return run_id, run_dir
+
+
 def fetch_file(config, remote_name, local_path):
     source = "%s:%s/%s" % (
         config["sandbox"],
@@ -442,20 +501,38 @@ def main(argv=None):
         action="store_true",
         help="skip the agent and just pull back what the sandbox already produced",
     )
+    parser.add_argument(
+        "--print-home",
+        action="store_true",
+        help="print the resolved arsenal home and exit (used by the launcher)",
+    )
     args = parser.parse_args(argv)
 
+    home = resolve_home(args.root)
+
+    if args.print_home:
+        print(home)
+        return EXIT_PASS
+
+    config_path = args.config
+    if not os.path.isabs(config_path) and not os.path.isfile(config_path):
+        # A bare `--config config.json` from another directory should find the
+        # root's wiring, not silently fall back to defaults.
+        candidate = os.path.join(home, config_path)
+        if os.path.isfile(candidate):
+            config_path = candidate
+
     config = dict(DEFAULT_CONFIG)
-    if os.path.isfile(args.config):
-        loaded = load_json(args.config)
+    if os.path.isfile(config_path):
+        loaded = load_json(config_path)
         if loaded is None:
-            log("config file is not valid JSON: %s" % args.config)
+            log("config file is not valid JSON: %s" % config_path)
             return EXIT_SETUP
         config.update(loaded)
-        log("loaded config from %s" % args.config)
+        log("loaded config from %s" % config_path)
     else:
-        log("no config file at %s, using defaults" % args.config)
+        log("no config file at %s, using defaults" % config_path)
 
-    home = resolve_home(args.root)
     config["home"] = home
     # The prompt is code (it ships with the skill); the project and the report
     # archive are data (they belong to the home). Mixing the two is how a
@@ -480,9 +557,10 @@ def main(argv=None):
         log("preflight passed; dry run stops here")
         return EXIT_PASS
 
-    run_id = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(config["out_dir"], run_id)
-    os.makedirs(run_dir, exist_ok=True)
+    # A run id must be unique, not just timestamped. Two runs in the same second
+    # used to share a directory, so the second one inherited the first one's
+    # result.json and reported a verdict about a test it never ran.
+    run_id, run_dir = make_run_dir(config["out_dir"])
     log("run directory: %s" % run_dir)
 
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as handle:

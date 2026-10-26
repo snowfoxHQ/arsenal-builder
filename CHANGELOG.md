@@ -307,3 +307,69 @@ C:\ai-arsenal\
 - `Documents\技能插件库\ai-arsenal\` 是与 `C:\ai-arsenal` 几乎一致的**第二份副本**
   （18848 vs 18851 文件，无 `.git`）。删掉它才算真正合一。
 - 那 10 个历史 zip 仍在 `Documents\技能插件库\ai-arsenal\skills\`，未搬动。
+
+## v2.9.0 — 2026-10-26 21:40
+
+**全部合并到 C:/ai-arsenal/，代码里不留一处绝对路径**
+
+上一版把「一个根」写进了文档，但磁盘上还是五处：主目录、`C:/tmp/arsenal-builder-v2`
+工作副本、`Documents\技能插件库\ai-arsenal` 整份副本、根目录 `engine\` 这个 v1 引擎、
+`sandbox-workspaces\` 里那份重复的被测项目。版本号还靠文件名区分（v1…v2.8 十个 zip）。
+结果是：报告看着正常，但没人说得清它测的是哪棵树——事实上确实测错过一次。
+
+**合拢动作**
+
+| 原位置 | 处置 |
+| --- | --- |
+| `C:/tmp/arsenal-builder-v2/` | → `archive\workcopies\arsenal-builder-v2-tmp\`（工作副本退役，`out\` 旧数据早前已回收到 `reports\`） |
+| `Documents\技能插件库\ai-arsenal\` 的 10 个历史 zip | → `archive\dist\v1-to-v2.7\` |
+| 同上，旧测试报告 | → `archive\reports\`（与 sandbox-workspaces 那份同源，加了来源后缀） |
+| 根目录 `engine\`（v1，写死 `C:\ai-arsenal\sandbox-workspaces\`） | → `archive\legacy\engine-v1\` |
+| 根目录 `install.bat`（指向早已不存在的 `templates-zh`） | → `archive\legacy\install-v1.bat`，重写为可用版本 |
+| `sandbox-workspaces\vecRecall\`（与 `workspaces\vecRecall` 逐字节一致，仅缺 `.git`） | → `archive\duplicates\` |
+| `archive\skills\arsenal-builder-v1\templates-*\.env.sbx` | 删除（旧凭据不该随归档四处留） |
+
+**代码里的地址问题，逐个修**
+
+1. **根改成「按结构推断」**：新增 `home_from_layout()`——本包在
+   `<根>\skills\arsenal-builder\`，根就是上两级。优先级变成
+   `--root` > `$ARSENAL_HOME` > **结构推断** > 包目录。
+   意义：整个文件夹从 `C:\` 搬到 `D:\`，**一个文件都不用改**；环境变量成了可选项，
+   不再是「忘了设就静默写错地方」的陷阱。
+2. **`--print-home`**：`runner.py` 打印它实际认出的根。`start_arsenal.bat` 改成向
+   runner 要这个值，不再靠 `%~dp0` 往上数层数——数错一层就会把报告写进包里。
+3. **`--config` 相对路径先找根**：从任意目录执行 `--config config.json`，
+   会依次找 cwd、根；以前会静默退回默认值（默认 `out_dir=out`，报告就落进包里）。
+4. **相对路径统一 `normpath`**：`last-run.txt` 里曾出现 `reports/arsenal\` 混用
+   两种分隔符，`set /p` 读回后 `cd` 会失败。
+5. **根目录入口重写**：`arsenal.cmd` 加 `install` / `selfcheck` 子命令；
+   新 `install.bat` 幂等（建目录、补 config、跑自检），全程只用 `%~dp0`，
+   没有一行 `C:\ai-arsenal`。
+6. **`selftest.py` 不再污染包目录**：把 `ARSENAL_HOME` 钉在临时目录，
+   自检不再往安装好的包里写 `last-run.txt`（上一版包里就带着一个指向已被删除的
+   临时目录的指针文件）。
+
+7. **沙箱绑定校验提前到预检**：原来只在真正执行时才验，`--dry-run` 报「预检通过」，
+   但实际会去测错的树。现在预检就查，`--dry-run` 能提前拦住；读不到绑定时
+   打一行警告（不静默放过）。
+8. **`--dry-run` 不再触发顾问点评**：预检通过后 `start_arsenal.bat` 会接着跑
+   `review.py`，点评读的是 `last-run.txt` 指向的**上一次**运行，还会真调一次模型
+   API——一次干跑的预检变成几十秒的网络等待。现在参数里有 `--dry-run` 就直接收工。
+
+**自检 17 → 19 场景**
+
+- 新增「home from layout」——`<根>\skills\<skill>\` 必须解出 `<根>`；不在 `skills\`
+  下的目录不许冒充根；`templates\` 不许被当成 skill 目录。
+- 新增「run dirs unique」——顺带揪出一个真 bug：`run_id` 只到秒，**同一秒内跑两次
+  会共用同一个运行目录**，后一次直接继承前一次的 `result.json`，于是输出一份
+  「每个数字都是真的，但不是这次跑的」判定。这类错误比崩溃更难发现。改为
+  `make_run_dir()` 分配，冲突就加 `-2`、`-3` 后缀，并且用 `exist_ok=False` 建目录，
+  让碰撞不可能被静默吞掉。
+
+**新增根目录文档**：`README.md`（一个根、路径契约、命令、退出码、归档说明）、
+`VERSION.txt` 升到 2.9.0。旧 `VERSION.txt` 存 `archive\legacy\VERSION-v1.txt`。
+
+实测：`python templates\selftest.py` → **19/19 ok**（连跑三次稳定）；
+`arsenal.cmd install` → 目录/配置/自检全过，退出码 0；
+`arsenal.cmd --dry-run` → 预检通过，报告的根是 `C:\ai-arsenal`；
+`runner.py --print-home` 在包内、在根、在 `C:\` 下执行都返回同一个根。
