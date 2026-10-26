@@ -499,3 +499,28 @@ Agent 严格照做，所以只给了这三样。v2 重写时全部精力都在�
 
 **没有改的**：`templates/*.py`、`PROMPT.md`、`config.example.json`、
 `result.schema.json` 一字未动；selftest 仍 21/21 ok。
+
+## v3.0.3 — 2026-10-27 00:13
+
+**README 手册与 SKILL 两份（中英）逐条对齐。** 交叉审查发现两处事实错误、五处口径不同步。
+
+事实错误：
+
+1. SKILL.md / SKILL.zh-CN.md 的版本号停在 **3.0.1**，README 手册已是 3.0.2。
+2. 「**220/220** 全绿、只因缺 `cryptography` 跳了 10 条断言」——数学上自相矛盾
+   （220 过 + 10 跳 = 总数 230）。按 v3.0.0 实测记录改为 **220/230**。
+
+口径不同步（两边各说一半，合并后与代码行为一致）：
+
+3. 退出码 2 的原因：SKILL 写「unsafe config, run aborted mid-way」，README 写
+   「bind 未确认、绑错目录」。对照 `runner.py` 证实**四种都触发**（preflight 失败、
+   config JSON 损坏、运行中途 error、绑定校验），两份文档都补全。
+4. SKILL 把 README.md 描述为 "package overview"——3.0.2 起它是完整手册。
+5. 红线 SKILL 5 条、README 6 条：补上「bind 读写挂载必须显式确认」。
+6. fail-closed 清单补「短哈希 ≥7 位前缀容错」（`arsenal_contract.py` 的
+   `same_commit` 实际行为，selftest 也有对应场景）。
+7. 第四阶段开头补 `arsenal.cmd` 为人用入口；根布局图补 `install.bat` 与 `dist`；
+   架构节「copies the file back」改为「copies the whole output directory」。
+
+**没有改的**：`templates/*.py`、`PROMPT.md`、json 配置、CHANGELOG 历史条目；
+selftest 仍 21/21 ok。

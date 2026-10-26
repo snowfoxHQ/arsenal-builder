@@ -11,13 +11,13 @@ description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台
 让这套东西成立的一句话：**沙箱只产数据，宿主才下结论。** 不要让沙箱措辞，
 更不要让一段散文决定通过与否。
 
-当前版本 **3.0.1**，每一版改了什么、为什么改，见 `CHANGELOG.md`。
+当前版本 **3.0.3**，每一版改了什么、为什么改，见 `CHANGELOG.md`。
 
 ## 什么时候用
 
 - 「搭一个隔离测试平台」「构建 AI 兵工厂」「配置 sbx 沙箱」
 - 「我的流水线永远报成功」「门禁从不失败」
-- 修复已有的兵工厂（本包为 **3.0.1**，替换 v1/v2 版本）
+- 修复已有的兵工厂（本包为 **3.0.3**，替换 v1/v2 版本）
 
 ## 架构
 
@@ -27,7 +27,8 @@ description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台
 | 沙箱（sbx） | 不可信 | 装依赖、跑测试、写 `result.json` + `report.md` |
 
 数据是**宿主拉出来的**，不是沙箱推过去的：Agent 写入沙箱内 `/tmp/arsenal-out`，
-宿主用 `sbx cp` 取回。沙箱不往宿主目录写任何东西。
+宿主用 `sbx cp` 把**整个输出目录**拉回来，不是两个写死的文件名。
+沙箱不往宿主目录写任何东西。
 
 ## 第一阶段 — 宿主前置
 
@@ -63,11 +64,13 @@ description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台
 ```
 <ARSENAL_HOME>\                    例如 C:\ai-arsenal
 ├── arsenal.cmd                     唯一入口（双击就跑）
+├── install.bat                     幂等安装 + 自检
 ├── config.json                     机器接线：测哪个项目、报告写哪
 ├── last-run.txt                    runner 写，指向最近一次运行
 ├── workspaces\vecRecall\           被测项目，自己带 .git
 ├── skills\arsenal-builder\         平台本体（本包解压到这）
 ├── reports\arsenal\<run_id>\       每次运行的产物
+├── dist\                           分发用的导出包
 └── archive\                        旧版本、旧报告，只读封存
 ```
 
@@ -115,7 +118,7 @@ start_arsenal.bat     一键启动（也可由根目录 arsenal.cmd 调）
 PROMPT.md             交给沙箱 Agent 的提示词
 config.example.json   复制成 <ARSENAL_HOME>\config.json 再改
 result.schema.json    契约参考
-README.md             包说明（中文），README.en.md 是英文镜像
+README.md             完整手册（中文）：架构原理 + 实操 + 排查，README.en.md 是英文镜像
 templates/
   runner.py             驱动沙箱、拉回结果、决定退出码
   arsenal_contract.py   契约校验（门禁逻辑本体）
@@ -202,7 +205,8 @@ Agent 拿到容器内私有克隆，测试副作用碰不到你的工作区。
 
 ## 第四阶段 — 运行与读结果
 
-双击 `start_arsenal.bat`，或 `python runner.py --config config.json`。
+双击 `arsenal.cmd`（它负责设好 `ARSENAL_HOME` 并透传参数），
+或在 skill 目录里 `python runner.py --config config.json`。
 
 退出码就是契约：
 
@@ -210,11 +214,11 @@ Agent 拿到容器内私有克隆，测试副作用碰不到你的工作区。
 | --- | --- |
 | 0 | 判定 PASS —— 计数自洽、无失败、无阻塞 |
 | 1 | 判定 FAIL —— 测试失败／计数不符／结果缺失／零用例／commit 不符／Agent 崩了，任一命中 |
-| 2 | 配置错误 —— 缺 sbx、缺 Key、项目路径错、配置不安全、运行中途异常 |
+| 2 | 配置错误 —— 缺 sbx、缺 Key、项目路径错、config 损坏、`bind` 未确认风险、沙箱绑错目录、运行中途异常 |
 | 3 | 判定 BLOCKED —— 没有用例失败，但有一部分**根本没跑**（缺依赖、网络被封）。不是通过，也不是失败 |
 
 `blocked` 单独给一个码，是因为「测试挂了」和「测试没跑完」是两件事。
-早先两者都报 FAIL，一次 220/220 全绿、只因缺 `cryptography` 跳了 10 条断言的运行，
+早先两者都报 FAIL，一次 220/230 全绿、只因缺 `cryptography` 跳了 10 条断言的运行，
 看起来就像代码是坏的。`passed` 字段仍然只在 0 时为 `true`，任何只认退出码为 0
 的脚本行为不变。
 
@@ -278,7 +282,7 @@ python templates/runner.py --config config.json --collect
 - `passed + failed + skipped != total`
 - `total == 0` —— 空用例集不算通过
 - `failed > 0` → FAIL；`blocked` 非空 → BLOCKED（3），两者都不是通过
-- `commit` 为空，或与 `expect_commit` 不一致
+- `commit` 为空，或与 `expect_commit` 不一致（任一侧是短哈希且 ≥7 位前缀吻合则容错）
 - `finished_at` 不晚于 `started_at`
 - Agent 进程退出码非 0
 
@@ -293,6 +297,8 @@ python templates/runner.py --config config.json --collect
   `runner.py` 用 `--env-file` + 0600 临时文件
 - **绝不** 让沙箱下结论。提示词禁止，宿主校验，`review.py` 只是顾问
 - **绝不** 解析 `report.md` 做任何决定，那是给人看的散文
+- **绝不** 在没有显式 `"i_accept_bind_mount_risk": true` 的情况下把宿主目录
+  读写暴露给 Agent（`workspace_mode: "bind"`）
 
 ## 验证安装
 

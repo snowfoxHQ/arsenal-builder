@@ -1,4 +1,4 @@
-# AI Arsenal Builder 3.0.2 —— 完整手册
+# AI Arsenal Builder 3.0.3 —— 完整手册
 
 在 Windows 上用 Docker `sbx` 沙箱搭一个**专用 AI 测试平台**：
 DeepSeek Harness 在宿主，Claude Code 在沙箱里跑测试，**判定权留在宿主**。
@@ -90,7 +90,7 @@ DeepSeek Harness 在宿主，Claude Code 在沙箱里跑测试，**判定权留�
 | --- | --- | --- |
 | 0 | PASS | 计数自洽、无失败、无阻塞 |
 | 1 | FAIL | 测试失败／计数不符／结果缺失／零用例／commit 不符／Agent 崩了 |
-| 2 | SETUP | 缺 sbx、缺 Key、项目路径错、`bind` 未确认风险、沙箱绑错目录 |
+| 2 | SETUP | 缺 sbx、缺 Key、项目路径错、config 损坏、`bind` 未确认风险、沙箱绑错目录、运行中途异常 |
 | 3 | BLOCKED | 没有失败，但有一部分**根本没跑**（缺依赖／网络被封） |
 
 `BLOCKED` 单独给一个码，是因为「测试挂了」和「测试没跑完」是两件事。早先两者都报

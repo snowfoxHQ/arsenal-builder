@@ -1,4 +1,4 @@
-# AI Arsenal Builder 3.0.2 — Full Manual
+# AI Arsenal Builder 3.0.3 — Full Manual
 
 A dedicated AI test platform for Windows: **DeepSeek Harness on the host** drives
 **Docker `sbx` sandboxes (untrusted)**, a Claude Code agent inside the sandbox runs
@@ -99,7 +99,7 @@ hardest failure to notice. `runner.py` reads the real binding from
 | --- | --- | --- |
 | 0 | PASS | counts add up, nothing failed, nothing blocked |
 | 1 | FAIL | tests failed / counts inconsistent / result missing / zero tests / commit mismatch / agent crashed |
-| 2 | SETUP | sbx missing, key unset, wrong project path, `bind` without risk confirmation, sandbox bound elsewhere |
+| 2 | SETUP | sbx missing, key unset, wrong project path, broken config, `bind` without risk confirmation, sandbox bound elsewhere, run aborted mid-way |
 | 3 | BLOCKED | nothing failed, but part of the suite **never ran** (missing dependency / no network) |
 
 `BLOCKED` gets its own code because "the tests broke" and "the tests never finished"

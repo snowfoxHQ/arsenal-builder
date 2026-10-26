@@ -12,13 +12,13 @@ runs the test suite, and the **host decides the verdict**.
 The rule that makes this work: *the sandbox produces data, the host produces the
 verdict.* Never let the sandbox phrase the answer, and never let prose decide it.
 
-Current version: **3.0.1** — what changed and why is in `CHANGELOG.md`.
+Current version: **3.0.3** — what changed and why is in `CHANGELOG.md`.
 
 ## When to use this skill
 
 - "set up an isolated testing platform", "build an AI arsenal", "配置 sbx 沙箱"
 - "my test pipeline always reports success", "the gate never fails"
-- Repairing an existing arsenal (this package is **3.0.1** and replaces the v1/v2 packages)
+- Repairing an existing arsenal (this package is **3.0.3** and replaces the v1/v2 packages)
 
 ## Architecture
 
@@ -28,8 +28,8 @@ Current version: **3.0.1** — what changed and why is in `CHANGELOG.md`.
 | Sandbox (sbx) | untrusted | installs deps, runs suite, writes `result.json` + `report.md` |
 
 Data flows **out by pull**: the agent writes to `/tmp/arsenal-out` inside the
-sandbox, the host copies the file back with `sbx cp`. The sandbox never writes
-into a host directory.
+sandbox, the host copies the whole output **directory** back with `sbx cp` —
+not two hard-coded file names. The sandbox never writes into a host directory.
 
 ## Phase 1 — Host prerequisites
 
@@ -68,11 +68,13 @@ Three things, one root. Never three scattered directories:
 ```
 <ARSENAL_HOME>\                    e.g. C:\ai-arsenal
 ├── arsenal.cmd                     the only entry point
+├── install.bat                     idempotent install + self-check
 ├── config.json                     wiring: which project, where reports go
 ├── last-run.txt                    written by the runner, points at the newest run
 ├── workspaces\vecRecall\           the project, with its own .git
 ├── skills\arsenal-builder\         this package, unzipped here
 ├── reports\arsenal\<run_id>\       artifacts of one run
+├── dist\                           the distributable zip
 └── archive\                        old versions and old reports, read-only
 ```
 
@@ -125,7 +127,7 @@ start_arsenal.bat     one-click launcher (also called by the root's arsenal.cmd)
 PROMPT.md             the prompt handed to the sandbox agent
 config.example.json   copy to <ARSENAL_HOME>\config.json and edit
 result.schema.json    the contract, for reference
-README.md             package overview (Chinese) - README.en.md is the mirror
+README.md             the full manual (Chinese): architecture + operation - README.en.md is the mirror
 templates/
   runner.py           drives the sandbox, pulls the result, sets the exit code
   arsenal_contract.py contract validation (the gate's logic)
@@ -210,7 +212,8 @@ behind `"i_accept_bind_mount_risk": true` — think before setting it.
 
 ## Phase 4 — Run and read the result
 
-Double-click `start_arsenal.bat`, or `python runner.py --config config.json`.
+Double-click `arsenal.cmd` (it sets `ARSENAL_HOME` and forwards flags), or run
+`python runner.py --config config.json` from the skill directory.
 
 Exit codes are the contract:
 
@@ -218,11 +221,11 @@ Exit codes are the contract:
 | --- | --- |
 | 0 | verdict PASS — counts added up, nothing failed, nothing blocked |
 | 1 | verdict FAIL — any of: tests failed, counts inconsistent, result missing, zero tests, commit mismatch, agent crashed |
-| 2 | setup error — sbx missing, key unset, project path wrong, unsafe config, run aborted mid-way |
+| 2 | setup error — sbx missing, key unset, project path wrong, config broken, `bind` without risk confirmation, sandbox bound to another directory, run aborted mid-way |
 | 3 | verdict BLOCKED — nothing failed, but part of the suite never ran (missing dependency, no network). Not a pass, not a failure |
 
 `blocked` gets its own code because "the tests broke" and "the tests never
-finished" are different facts. Both used to print FAIL, so a 220/220 green run
+finished" are different facts. Both used to print FAIL, so a 220/230 green run
 that skipped 10 assertions for a missing `cryptography` package looked like
 broken code. `passed` is still only `true` at exit 0, so any script that checks
 for zero keeps the same behaviour.
@@ -292,7 +295,8 @@ failure modes, not hypotheticals:
 - `passed + failed + skipped != total`
 - `total == 0` — an empty suite is not a pass
 - `failed > 0` → FAIL; non-empty `blocked` → BLOCKED (3). Neither is a pass.
-- `commit` empty, or different from `expect_commit`
+- `commit` empty, or different from `expect_commit` (an abbreviated hash is
+  tolerated when a ≥7-char prefix matches on either side)
 - `finished_at` not later than `started_at`
 - the agent process exited non-zero
 
@@ -309,6 +313,8 @@ confidence.
 - **Never** let the agent write the verdict. The prompt forbids it; the host
   validates it; `review.py` is advisory only.
 - **Never** parse `report.md` to decide anything. It is prose for humans.
+- **Never** expose the host directory read-write (`workspace_mode: "bind"`) without
+  an explicit `"i_accept_bind_mount_risk": true`.
 
 ## Verifying an install
 
