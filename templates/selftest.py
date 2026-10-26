@@ -157,12 +157,15 @@ def reset_state(state):
     open(os.path.join(state, "exists"), "w").close()
 
 
-def stage(state, result=None, exec_rc=0, exec_output=b"", workspace=None):
+def stage(state, result=None, exec_rc=0, exec_output=b"", workspace=None, report=None):
     files = os.path.join(state, "files")
     if result is not None:
         payload = result if isinstance(result, str) else json.dumps(result)
         with open(os.path.join(files, "result.json"), "w", encoding="utf-8") as handle:
             handle.write(payload)
+    if report is not None:
+        with open(os.path.join(files, "report.md"), "w", encoding="utf-8") as handle:
+            handle.write(report)
     with open(os.path.join(state, "exec.rc"), "w", encoding="utf-8") as handle:
         handle.write(str(exec_rc))
     with open(os.path.join(state, "exec.bin"), "wb") as handle:
@@ -301,6 +304,38 @@ def check_layout_home(_run_dir=None):
     return (not problems, "; ".join(problems))
 
 
+def _report_problems(run_dir):
+    path = os.path.join(run_dir, "summary.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle).get("report_problems")
+
+
+def check_thin_report(run_dir):
+    """A report that only says how many tests passed must be flagged.
+
+    Not failed - the tests may be perfectly green - but flagged, because the
+    report once collapsed from 174 lines of substance to 51 lines of counts and
+    nothing in the pipeline noticed for several versions.
+    """
+    problems = _report_problems(run_dir)
+    if problems is None:
+        return False, "no summary.json to read report_problems from"
+    if not problems:
+        return False, "a one-screen report was accepted without comment"
+    return True, ""
+
+
+def check_rich_report(run_dir):
+    problems = _report_problems(run_dir)
+    if problems is None:
+        return False, "no summary.json to read report_problems from"
+    if problems:
+        return False, "a full report was rejected: " + "; ".join(problems)
+    return True, ""
+
+
 def check_prompt_rendered(_run_dir=None):
     """Every {{PLACEHOLDER}} must be substituted before the agent sees it.
 
@@ -319,8 +354,159 @@ def check_prompt_rendered(_run_dir=None):
         )
     if not cfg["report_language"].strip():
         return False, "report_language is empty"
+    if "Report depth:" not in text:
+        return False, "the rendered prompt does not tell the agent how much to write"
+    brief = runner.build_prompt(dict(cfg, report_depth="brief"))
+    if "Report depth: **brief**" not in brief:
+        return False, "report_depth=brief does not reach the prompt"
     return True, ""
 
+
+# Two report shapes. The thin one is what the pipeline actually produced for a
+# while: a screenful of counts. The rich one follows the outline in PROMPT.md.
+THIN_REPORT = """# vecRecall - Test Run Report
+
+## Stack
+
+- Python 3.14.4, pip 25.1.1, no pytest.
+
+## Aggregated counts
+
+| Metric | Value |
+| --- | --- |
+| Total | 230 |
+| Passed | 230 |
+| Failed | 0 |
+
+## What failed
+
+Nothing.
+"""
+
+RICH_REPORT = """# vecRecall - Test Run Report
+
+Date: 2026-10-26
+Project: `C:/ai-arsenal/workspaces/vecRecall`
+Commit: `7f3a2c9`
+
+## 1. Overview
+
+VecRecall is a cognitive memory system rebuilt from MemPalace around one rule:
+retrieval is pure vector search and never filters by structure. The core
+principles, as the source states them:
+
+- retrieval goes through the vector path only; `wing`/`topic` never narrow a query
+- the Wing/Topic/Diary organisation layer exists for UI browsing and nothing else
+- the AAAK compressed summary is written to the SQLite UI layer, never indexed
+- four memory tiers are kept: L0 identity, L1 key moments, L2 semantic trigger,
+  L3 deep retrieval, with L2 firing at a 0.55 similarity threshold
+
+v2.0 adds a cognitive layer (entity/relation/summary extraction on write,
+semantic de-duplication), a temporal knowledge graph, forgetting-curve
+distillation, hybrid vector+graph retrieval, at-rest encryption, subword
+lexical embedding, and an optional hash chain.
+
+## 2. Stack
+
+| Item | Value |
+| --- | --- |
+| Language | Python |
+| Declared | `requires-python >= 3.10` |
+| Observed | 3.14.4 (`/usr/bin/python3`) |
+| Packaging | setuptools + wheel (PEP 517), package `vecrecall` |
+| Test runner | project-bundled scripts, not pytest |
+
+## 3. Module layout
+
+```
+core/engine.py          1349 lines  main engine + vector/embedding backends
+core/extractor.py        260 lines  cognitive extractor (heuristic / LLM)
+core/temporal_graph.py   344 lines  temporal knowledge graph over SQLite
+blockchain/chain.py      456 lines  hash chain storage
+api/server.py            373 lines  REST service with auth and CORS
+```
+
+## 4. Dependencies
+
+| Package | Kind | Status | Version |
+| --- | --- | --- | --- |
+| (core) | required | none by design | - |
+| cryptography | extra `crypto` | installed | 50.0.2 |
+| chromadb | extra `chroma` | not installed | - |
+| sentence-transformers | extra `sentence` | not installed | - |
+
+## 5. Test results
+
+### `tests/test_core.py`
+
+Command: `python3 tests/test_core.py` - result 158/158, exit 0.
+
+Covers:
+
+- write and retrieval on the vector path
+- no structural filtering on retrieval (`wing`/`topic` never narrow a query)
+- AAAK `ui_summary` staying out of the vector index
+- the four memory tiers and the L2 similarity trigger at 0.55
+- graph round-trip over SQLite, batched writes, per-agent diary isolation
+- subword embedding variants (Chinese unigram/bigram/trigram, English 3/4-gram)
+- lifecycle: update, delete, prune, reindex, hybrid scoring
+- hash-chain integration and the embedding-backend factory
+- REST auth and MCP path isolation
+- cognitive extraction, including the LLM failure fallback
+
+### `tests/test_blockchain.py`
+
+Command: `python3 tests/test_blockchain.py` - result 72/72, exit 0.
+
+Covers:
+
+- block hashing, serialisation, tamper detection
+- chain append and verification
+- Chinese/English keyword extraction and lookup by keyword or date
+- automatic group promotion (4 small blocks to 1 L1)
+- the three platform hooks (OpenClaw / Hermes / Claude Code)
+- multi-wing isolation, stats and date indexing
+
+## 6. Aggregated counts
+
+| Metric | Value |
+| --- | --- |
+| Total | 230 |
+| Passed | 230 |
+| Failed | 0 |
+| Skipped | 0 |
+
+## 7. Benchmarks
+
+`python3 benchmarks/benchmark_recall.py` on the bundled 21-query / 15-document
+set, zero-dependency lexical embedding:
+
+| Backend | R@5 | MRR | README claims |
+| --- | --- | --- | --- |
+| `bow` (lexical, no dependencies) | 76.2% | 0.635 | 76.2% |
+| `hash` | not run | not run | not quoted |
+
+The measured recall matches the README exactly. The semantic backends were not
+benchmarked because their dependencies are absent.
+
+## 8. Not covered / risks
+
+- ChromaDB and sentence-transformers backends were never exercised; only the
+  zero-dependency backends ran.
+- The REST and MCP servers were covered by unit-level assertions, not by a live
+  client hitting a socket.
+- No concurrency test exists, so behaviour under parallel writers is unknown.
+
+## 9. Conclusion
+
+- **Verified**: the zero-dependency core and the blockchain layer behave as
+  documented, on Python 3.14.4, across 230 assertions with no failures. The
+  benchmark figure quoted in the README reproduces exactly.
+- **Not verified**: the ChromaDB and sentence-transformers backends, the REST and
+  MCP servers under a live client, and concurrent writers.
+- **Before adopting**: run the ChromaDB path against your own corpus, and decide
+  whether the absence of concurrency tests is acceptable for your write pattern.
+"""
 
 SCENARIOS = [
     {
@@ -371,6 +557,20 @@ SCENARIOS = [
         "expect": 0,
         "why": "an unsubstituted {{PLACEHOLDER}} sends the agent to a literal path",
         "check": check_prompt_rendered,
+    },
+    {
+        "name": "thin report flagged",
+        "setup": lambda s: stage(s, make_result(), 0, b"", report=THIN_REPORT),
+        "expect": 0,
+        "why": "a counts-only report must be called out, but not fail the gate",
+        "check": check_thin_report,
+    },
+    {
+        "name": "full report accepted",
+        "setup": lambda s: stage(s, make_result(), 0, b"", report=RICH_REPORT),
+        "expect": 0,
+        "why": "a report following the outline must pass the shape check",
+        "check": check_rich_report,
     },
     {
         "name": "tests failed",

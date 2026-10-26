@@ -44,8 +44,27 @@ DEFAULT_CONFIG = {
     # report nobody can read is the same as no report; the gate never parses it,
     # so switching it cannot change a verdict.
     "report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
+    # full  - all nine sections of the outline in PROMPT.md (the default, because
+    #         a report is written for a person deciding whether to adopt a project)
+    # brief - counts and blockers only, for CI runs where nobody reads it
+    "report_depth": "full",
     "out_dir": "out",
     "recreate": False,
+}
+
+# How much of the report outline to demand, per depth setting. Rendered into
+# {{REPORT_DEPTH}} so PROMPT.md stays one file for both modes.
+REPORT_DEPTH_TEXT = {
+    "full": (
+        "Report depth: **full**. Write all nine sections. Do not compress two "
+        "sections into one."
+    ),
+    "brief": (
+        "Report depth: **brief**. This run only needs sections 1 (Overview), "
+        "5 (Test results), 6 (Counts) and 8 (Not covered). Omit 2, 3, 4, 7 and 9 "
+        "- but do not drop 8: an unexamined gap is the one thing a reader cannot "
+        "recover from a count."
+    ),
 }
 
 EXIT_PASS = 0
@@ -351,7 +370,14 @@ def build_prompt(config):
         .replace("{{RESULT_PATH}}", "%s/%s" % (out_dir, config["result_name"]))
         .replace("{{REPORT_PATH}}", "%s/%s" % (out_dir, config["report_name"]))
         .replace("{{REPORT_LANGUAGE}}", config.get("report_language") or "英文")
+        .replace("{{REPORT_DEPTH}}", depth_text(config.get("report_depth")))
     )
+
+
+def depth_text(depth):
+    """Render {{REPORT_DEPTH}}. An unknown value falls back to full, never to brief:
+    a report that is too long wastes a minute, one that is too thin wastes a run."""
+    return REPORT_DEPTH_TEXT.get(str(depth or "").strip().lower(), REPORT_DEPTH_TEXT["full"])
 
 
 def run_in_sandbox(config, prompt, env_file, log_path):
@@ -436,15 +462,100 @@ def fetch_outputs(config, run_dir):
     return got_result, got_report
 
 
-def describe_artifacts(run_dir):
-    """One line per file kept on the host, so the run never ends in silence."""
+def describe_artifacts(run_dir, limit=40):
+    """One line per file kept on the host, so the run never ends in silence.
+
+    Must not raise. It runs after the verdict is already printed, so an
+    exception here turns a PASS into exit code 1 and skips writing summary.json
+    entirely - the exact "it finished but left nothing behind" failure this
+    whole function exists to prevent. A copied-back venv carrying a dangling
+    `lib64` symlink was enough to do it on Windows.
+    """
     rows = []
-    for root, _dirs, files in os.walk(run_dir):
+    skipped = 0
+    for root, dirs, files in os.walk(run_dir, onerror=lambda _e: None):
+        # Symlinked directories can point anywhere, including at targets that do
+        # not exist on this host; walking them is how getsize() started raising.
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
         for name in sorted(files):
             full = os.path.join(root, name)
-            rel = os.path.relpath(full, run_dir).replace("\\", "/")
-            rows.append((rel, os.path.getsize(full)))
+            try:
+                rel = os.path.relpath(full, run_dir).replace("\\", "/")
+                size = os.path.getsize(full)
+            except OSError:
+                skipped += 1
+                continue
+            rows.append((rel, size))
+    if len(rows) > limit:
+        skipped += len(rows) - limit
+        rows = rows[:limit]
+    if skipped:
+        rows.append(("... %d more not listed" % skipped, 0))
     return rows
+
+
+# What a usable report looks like, per depth. Crude on purpose: counting
+# sections, table rows and bullets catches the one regression this exists for -
+# a report that kept its headings but lost everything under them.
+REPORT_SHAPE = {
+    "full": {"sections": 6, "bytes": 4000, "table_rows": 12, "bullets": 15},
+    "brief": {"sections": 3, "bytes": 600, "table_rows": 0, "bullets": 0},
+}
+
+
+def audit_report(report_path, depth):
+    """Check the report is something a person could act on.
+
+    This never touches the verdict by default: the gate is about test truth, and
+    letting prose quality flip an exit code would make pass/fail unpredictable.
+    It exists because the report once quietly shrank from 174 lines to 51 - the
+    tests still passed, so nothing anywhere complained, and the only signal was
+    a human opening the file and finding counts and nothing else.
+
+    Measured against the two real reports this pipeline produced: the good one
+    scores 8194 B / 27 table rows / 13 headings, the thin one 2001 B / 6 / 5.
+    The thresholds sit between them, closer to the thin side, because a false
+    warning costs one line of output while a missed one costs a whole run.
+    """
+    if not os.path.isfile(report_path):
+        return ["no report was produced"]
+
+    shape = REPORT_SHAPE.get(str(depth or "").strip().lower(), REPORT_SHAPE["full"])
+    try:
+        with open(report_path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError as exc:
+        return ["report could not be read: %s" % exc]
+
+    lines = text.splitlines()
+    problems = []
+    sections = sum(1 for line in lines if line.lstrip().startswith("## "))
+    table_rows = sum(1 for line in lines if line.lstrip().startswith("|"))
+    bullets = sum(
+        1 for line in lines if line.lstrip().startswith(("- ", "* "))
+    )
+    size = len(text.encode("utf-8"))
+
+    if sections < shape["sections"]:
+        problems.append(
+            "%d section(s), outline asks for %d" % (sections, shape["sections"])
+        )
+    if size < shape["bytes"]:
+        problems.append(
+            "%d B of prose, too little to explain anything (%d B expected)"
+            % (size, shape["bytes"])
+        )
+    if table_rows < shape["table_rows"]:
+        problems.append(
+            "%d table row(s), expected at least %d - stack, dependencies and "
+            "counts all belong in tables" % (table_rows, shape["table_rows"])
+        )
+    if bullets < shape["bullets"]:
+        problems.append(
+            "%d bullet(s) of coverage and risk, expected at least %d"
+            % (bullets, shape["bullets"])
+        )
+    return problems
 
 
 def make_run_dir(out_dir, when=None):
@@ -506,6 +617,17 @@ def main(argv=None):
         action="store_true",
         help="print the resolved arsenal home and exit (used by the launcher)",
     )
+    parser.add_argument(
+        "--report-depth",
+        choices=sorted(REPORT_DEPTH_TEXT),
+        default=None,
+        help="how much of the report outline to demand (overrides config)",
+    )
+    parser.add_argument(
+        "--strict-report",
+        action="store_true",
+        help="treat a thin report as a failure instead of a warning",
+    )
     args = parser.parse_args(argv)
 
     home = resolve_home(args.root)
@@ -545,6 +667,8 @@ def main(argv=None):
 
     if args.recreate:
         config["recreate"] = True
+    if args.report_depth:
+        config["report_depth"] = args.report_depth
 
     problems = preflight(config)
     if problems:
@@ -667,6 +791,15 @@ def main(argv=None):
     else:
         exit_code = verdict.code
 
+    report_path = find_artifact(run_dir, config["report_name"])
+    # When the run itself broke, the reason is already printed above; auditing a
+    # report that was never going to exist just adds noise to a loud failure.
+    report_problems = (
+        [] if error else audit_report(report_path, config.get("report_depth"))
+    )
+    if report_problems and args.strict_report and exit_code == EXIT_PASS:
+        exit_code = EXIT_FAIL
+
     print("", flush=True)
     print("=" * 62, flush=True)
     if error:
@@ -688,6 +821,10 @@ def main(argv=None):
             "  note: no report.md came back; the verdict above is from result.json only",
             flush=True,
         )
+    for problem in report_problems:
+        print("  report: %s" % problem, flush=True)
+    if report_problems and args.strict_report:
+        print("  report: --strict-report counted this as a failure", flush=True)
     print("=" * 62, flush=True)
 
     artifacts = describe_artifacts(run_dir)
@@ -731,6 +868,9 @@ def main(argv=None):
         ),
         "result_fetched": got_result,
         "report_fetched": got_report,
+        "report_ok": not report_problems,
+        "report_depth": config.get("report_depth"),
+        "report_problems": report_problems,
         "artifacts": [rel for rel, _size in artifacts],
     }
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as handle:

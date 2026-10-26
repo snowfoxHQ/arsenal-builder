@@ -10,6 +10,8 @@
   "sbx_bin": "sbx",
   "prompt_file": "PROMPT.md",
   "report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
+  "report_depth": "full",
+  "_report_depth_note": "full = all nine sections of the PROMPT.md outline (default); brief = counts and blockers only, for CI",
   "out_dir": "out",
   "recreate": false
 }

@@ -132,16 +132,53 @@ templates/
 
 Then `copy config.example.json config.json` and set `project_dir`.
 
-The report language is set by `report_language` (Chinese by default):
+### What the report must contain
+
+`PROMPT.md` carries a **nine-section outline**, not a one-line request. By
+default the agent writes all of it:
+
+| # | Section | What has to be in it |
+| --- | --- | --- |
+| 1 | Overview | what the project is, what it solves, its core principles — read from the source, not the README |
+| 2 | Stack | table: language / declared requirement / **observed** version / packaging / test runner |
+| 3 | Module layout | tree with the real `wc -l` line count and the job of each file |
+| 4 | Dependencies | one row per dependency: kind / status / version. **This table is what makes two runs comparable** |
+| 5 | Test results | per suite: command, the raw `158/158`, exit code, and what it covers (as bullets) |
+| 6 | Counts | total / passed / failed / skipped, integers |
+| 7 | Benchmarks | tabulate and compare against the README's claim; say plainly if there is nothing to run |
+| 8 | Not covered / risks | what this run did not verify, and why a reader should care |
+| 9 | Conclusion | facts: which dimensions are verified, which are not. **No PASS/FAIL wording** — the host owns the verdict |
+
+Two settings control the prose, and neither can move a verdict because the gate
+never parses the report:
 
 ```json
-"report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）"
+"report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
+"report_depth": "full"
 ```
 
-It only affects the prose in `report.md` and the `blocked` strings in
-`result.json` — **the gate never parses the report**, so changing this cannot
-change a verdict. Set it to `"English"` for English reports. `review.py`
-commentary is Chinese by default; override with `--language`.
+`report_depth` is `full` (all nine sections) or `brief` (sections 1, 5, 6 and 8
+only, for CI runs nobody reads). Override per run with `--report-depth brief`.
+`review.py` commentary is Chinese by default; override with `--language`.
+
+### The report is audited separately
+
+After every run the runner counts sections, table rows and bytes, and prints
+anything that looks thin:
+
+```
+  report: 5 section(s), outline asks for 6
+  report: 1863 B of prose, too little to explain anything (4000 B expected)
+```
+
+By default this is a warning only: green tests and a badly written report are
+different problems, and letting prose quality flip an exit code would make the
+verdict unpredictable. Add `--strict-report` to count it as a failure.
+
+> Why this exists: the report once shrank from 174 lines / 8194 bytes to 51
+> lines / 2001 bytes. The headings survived, the content did not, the tests were
+> still green, and **nothing anywhere complained** — until a human opened the
+> file and found counts and nothing else.
 
 `project_dir` is **the repository you want tested**, not a copy of it:
 
@@ -249,22 +286,23 @@ confidence.
 
 ## Verifying an install
 
-`runner.py` ships with a self-test that exercises the gate against nineteen
+`runner.py` ships with a self-test that exercises the gate against twenty-one
 scenarios without touching a real sandbox — eleven verdict cases (pass, tests
 failed, deps blocked, missing result, inconsistent counts, zero tests, crashed
-agent, garbage JSON, non-UTF8 output, wrong commit, abbreviated commit), four
+agent, garbage JSON, non-UTF8 output, wrong commit, abbreviated commit), five
 contract checks (a run must leave `summary.json` / `agent.log` / the sandbox
-output behind, the data/code path split, the root inferred from the layout, and
-a fully rendered prompt with no leftover `{{PLACEHOLDER}}`, and unique run
- directories), one sandbox-binding
-check, and two that check the preflight refuses an unusable `project_dir`:
+output behind, the data/code path split, the root inferred from the layout, a
+fully rendered prompt that carries the report depth, and unique run
+directories), two report audits (a counts-only report must be flagged, a full
+one must pass), one sandbox-binding check, and two that check the preflight
+refuses an unusable `project_dir`:
 
 ```
 python templates/selftest.py
 ```
 
-All nineteen must report `ok`. If any reports `MISMATCH`, the gate is broken — do
-not trust its PASS verdicts.
+All twenty-one must report `ok`. If any reports `MISMATCH`, the gate is broken —
+do not trust its PASS verdicts.
 
 ## Uninstall
 

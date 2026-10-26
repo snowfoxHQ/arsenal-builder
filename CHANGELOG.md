@@ -373,3 +373,65 @@ C:\ai-arsenal\
 `arsenal.cmd install` → 目录/配置/自检全过，退出码 0；
 `arsenal.cmd --dry-run` → 预检通过，报告的根是 `C:\ai-arsenal`；
 `runner.py --print-home` 在包内、在根、在 `C:\` 下执行都返回同一个根。
+
+## v3.0.0 — 2026-10-26 22:47
+
+**报告从「51 行计数」恢复到「174 行以上」，并且以后退化了会被抓出来**
+
+现象：同一套测试，v1 时代的报告 174 行 / 8194 字节（项目概览、技术栈、模块结构带行数、
+依赖逐项状态、每套件覆盖了什么、benchmark、结论），v2 之后的报告 51 行 / 2001 字节
+（Stack 四条 bullet、命令、计数表、失败项）。**结论只剩「绿了没有」**，看完不知道
+这项目是干什么的、测了哪些行为、哪些没测。
+
+根因是一句话。`PROMPT.md` 里对报告的全部要求就是：
+
+```
+{{REPORT_PATH}} — human-readable summary: stack, commands run, what failed
+```
+
+Agent 严格照做，所以只给了这三样。v2 重写时全部精力都在「门禁不能假成功」
+（取回、落盘、退出码、路径、编码、绑定校验），**报告要能读这件事从头到尾没被审视过**。
+
+修法四处：
+
+1. **`PROMPT.md` 换成九节大纲**：概览（读源码不是抄 README）／技术栈（含**实测**版本）／
+   模块结构（`wc -l` 实数行数）／依赖逐项表（**这张表决定两次运行可比**）／
+   逐套件结果 + **覆盖了什么**（必须来自真实用例名，不许从 README 推导）／计数／
+   基准（对比 README 声称值）／未覆盖与风险／结论（事实归纳，禁止写 PASS/FAIL）。
+2. **新增 `report_depth`**：`full`（默认，九节全写）／`brief`（只写 1/5/6/8，给 CI）。
+   可用 `--report-depth brief` 临时覆盖。未知值一律退回 `full`——报告多写一页浪费一分钟，
+   少写一页浪费一次运行。
+3. **报告体检 `audit_report()`**：跑完数章节数、表格行、bullet 数、字节数，不够就打印。
+   默认只警告（测试绿不绿与报告好不好是两件事，让散文质量翻退出码会让判定不可预测）；
+   `--strict-report` 时计入失败。阈值取自两份真实报告：好的那份 8194 B / 27 表格行 /
+   13 标题，薄的那份 2001 B / 6 / 5，阈值卡在中间偏薄一侧。
+4. **`PROMPT.md` 补两条约束**：依赖装进项目或系统解释器，**不许装进 `{{OUT_DIR}}`**
+   （输出目录只该有报告和日志）；被网络策略拦住就记下原因，不要反复重试。
+
+**顺带修一个真 bug（v2.9 就有，这次才暴露）**
+
+`describe_artifacts()` 用 `os.path.getsize` 遍历运行目录，撞上从沙箱拷回的
+`venv/lib64` 符号链接时在 Windows 抛 `PermissionError`。它跑在 `VERDICT: PASS`
+打印**之后**、写 `summary.json` **之前**，于是：判定已经说 PASS，进程却崩了，
+退出码变 1，`summary.json` 一个字节都没写——正是「跑完什么都没留下」这个
+本版本要解决的问题，被自己的收尾代码又制造了一次。
+修：`os.walk(onerror=...)` 忽略错误、跳过目录符号链接、`getsize` 单独兜住
+`OSError`、输出最多 40 行并补一行 `... N more not listed`。
+
+自检 19 → **21 场景**：新增「thin report flagged」（薄报告必须被标出但退出码仍 0）、
+「full report accepted」（合格报告必须放行）；「prompt fully rendered」增加
+`Report depth` 与 `brief` 渲染检查。
+
+**实测**（真沙箱，被测 `workspaces\vecRecall`，6 分 13 秒）：
+
+- 报告 **16574 字节**（旧版好的那份 8194，薄的那份 2001），九节齐全；
+  `test_core.py` 28 条用例逐条列出断言了什么，`test_blockchain.py` 13 条；
+  模块结构 18 个源文件 5585 行（`wc -l` 实数）；benchmark 表里 `bow` R@5 76.2% /
+  MRR 0.635 与 README 一致，`sentence` 分支明写「未跑，依赖缺失」；
+  风险节 8 条，具体到「`prune(use_forgetting=True)` 组合路径未直接断言」
+- `report_ok: true`、`report_problems: []`
+- 判定 `BLOCKED`（exit 3）：220/230，10 项静态加密因 `cryptography` 装不上而自跳过，
+  pypi.org 被沙箱防火墙 403 拦下
+- 薄报告回归验证：`--collect` 对旧那次 → 三项问题全部打印、退出码仍 0；
+  加 `--strict-report` → 退出码 1，`summary.json` 记录 `report_ok: false`
+- `python templates\selftest.py` → **21/21 ok**

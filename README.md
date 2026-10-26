@@ -109,7 +109,7 @@ arsenal-builder/
     ├── runner.py             drives the sandbox, pulls results, sets the exit code
     ├── arsenal_contract.py   contract validation
     ├── review.py             advisory commentary (never affects the verdict)
-    └── selftest.py           19-scenario gate self-test
+    └── selftest.py           21-scenario gate self-test
 ```
 
 ## Security boundary
