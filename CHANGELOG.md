@@ -435,3 +435,34 @@ Agent 严格照做，所以只给了这三样。v2 重写时全部精力都在�
 - 薄报告回归验证：`--collect` 对旧那次 → 三项问题全部打印、退出码仍 0；
   加 `--strict-report` → 退出码 1，`summary.json` 记录 `report_ok: false`
 - `python templates\selftest.py` → **21/21 ok**
+
+## v3.0.1 — 2026-10-26 23:10
+
+**只改文档，代码与门禁零变化。** 起因：解压 `v3.0` 的包，第一份文档还在讲 v2。
+
+三处不一致：
+
+1. 包里的 `README.md` 开头是 `# AI Arsenal Builder v2`（英文），`README_zh.md` 是
+   `# AI 兵工厂构建器 v2`（中文），而 `VERSION.txt` 写 3.0.0。谁打开 zip 都会以为
+   装了个旧版——这比没有文档更糟，因为它错得很有说服力。
+2. `SKILL.md` / `SKILL.zh-CN.md` 里运行目录还写着 `out/<run_id>/`、`out/latest.txt`。
+   实际根上 `out_dir` 是 `reports/arsenal`，并且**两个指针都会写**：
+   `<out_dir>/latest.txt` 和根上的 `last-run.txt`。
+3. `summary.json` 的示例缺 `paths` / `report_ok` / `report_depth` /
+   `report_problems` —— 而这四个字段正是「这次到底动了哪三处」和「报告有没有缩水」
+   的答案，恰恰是 3.0 的两条主线。
+
+改法：
+
+- 包内 `README.md` 重写为 **v3 中文精简版**（包视角：包里有什么／怎么装进根／
+  路径契约／命令／退出码／报告／自检／红线／卸载），英文改为 `README.en.md`；
+  旧的 `README_zh.md` 删除——两个 README 内容重复是漂移的温床。
+- `SKILL.md` / `SKILL.zh-CN.md`：运行目录改 `reports\arsenal\<run_id>\`，
+  说明两个 `latest` 指针为什么要各放一处；`summary.json` 示例补齐五个绝对路径与
+  报告体检字段；补「`arsenal.cmd` 与 `install.bat` 在根上、不在包里」；
+  `--collect` 同时给出根启动器写法；卸载命令加 `--force`（不带会停在确认提示上）。
+- `LICENSE` 换行符统一（包内原为 LF、根为 CRLF，`diff` 报全文 21 行全不同）。
+  现在两份 SHA-256 一致。
+
+**没有改的**：`templates/*.py`、`PROMPT.md`、`config.example.json`、
+`result.schema.json` 一字未动；`selftest.py` 仍 21/21 ok。

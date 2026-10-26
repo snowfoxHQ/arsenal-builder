@@ -11,11 +11,13 @@ description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台
 让这套东西成立的一句话：**沙箱只产数据，宿主才下结论。** 不要让沙箱措辞，
 更不要让一段散文决定通过与否。
 
+当前版本 **3.0.1**，每一版改了什么、为什么改，见 `CHANGELOG.md`。
+
 ## 什么时候用
 
 - 「搭一个隔离测试平台」「构建 AI 兵工厂」「配置 sbx 沙箱」
 - 「我的流水线永远报成功」「门禁从不失败」
-- 修复已有的兵工厂（本 v2 替换早期版本）
+- 修复已有的兵工厂（本包为 **3.0.1**，替换 v1/v2 版本）
 
 ## 架构
 
@@ -113,12 +115,16 @@ start_arsenal.bat     一键启动（也可由根目录 arsenal.cmd 调）
 PROMPT.md             交给沙箱 Agent 的提示词
 config.example.json   复制成 <ARSENAL_HOME>\config.json 再改
 result.schema.json    契约参考
+README.md             包说明（中文），README.en.md 是英文镜像
 templates/
   runner.py             驱动沙箱、拉回结果、决定退出码
   arsenal_contract.py   契约校验（门禁逻辑本体）
   review.py             DeepSeek 顾问式点评（永不影响判定）
   selftest.py           门禁自检（21 个场景）
 ```
+
+另外两个入口在**根**上，不在包里：`arsenal.cmd`（人唯一需要双击的那个，负责设好
+`ARSENAL_HOME` 并透传所有参数）和 `install.bat`（幂等安装 + 自检）。
 
 然后 `copy config.example.json ..\..\config.json`，改掉 `project_dir`
 （写相对路径 `workspaces/<repo>` 即可，相对根解析）。
@@ -212,16 +218,21 @@ Agent 拿到容器内私有克隆，测试副作用碰不到你的工作区。
 看起来就像代码是坏的。`passed` 字段仍然只在 0 时为 `true`，任何只认退出码为 0
 的脚本行为不变。
 
-每次运行都会在 `out/<run_id>/` 留痕，**运行目录绝不会是空的**：
+每次运行都会在 `out_dir` 下留痕——正经的根里就是 `reports\arsenal\<run_id>\`，
+而且**运行目录绝不会是空的**：
 
 ```
-out/<run_id>/
-  summary.json                     机器答案（判定、原因、计数、产物清单）
+<ARSENAL_HOME>\reports\arsenal\<run_id>\
+  summary.json                     机器答案（判定、原因、计数、产物、五个绝对路径）
   agent.log                        沙箱 Agent 的完整输出（窗口被关也留得住）
   sandbox/arsenal-out/             沙箱输出目录整个搬回来，不只两个文件
     result.json  report.md  logs/…
-out/latest.txt                     最近一次运行的目录路径
+<ARSENAL_HOME>\reports\arsenal\latest.txt   最近一次运行的目录路径
+<ARSENAL_HOME>\last-run.txt                 同一个路径，放在根上给启动器用
 ```
+
+两个指针是有意的：`latest.txt` 跟运行目录放一起，`last-run.txt` 放根上，
+启动器不必知道 `out_dir` 指向哪、也不必解析谁的散文就能找到最新那次。
 
 拉的是**整个目录**而不是两个写死的文件名：Agent 额外留下的原始日志、覆盖率、
 环境清单都会自动带回来，不会因为宿主事先不知道名字而被悄悄丢掉。
@@ -229,17 +240,29 @@ out/latest.txt                     最近一次运行的目录路径
 **读 `summary.json`**，那才是机器答案：
 
 ```json
-{ "state": "pass", "passed": true, "exit_code": 0,
+{ "run_id": "2026-10-26T22-41-08", "state": "pass", "passed": true, "exit_code": 0,
+  "paths": { "home": "C:\\ai-arsenal", "skill": "C:\\ai-arsenal\\skills\\arsenal-builder",
+             "project": "C:\\ai-arsenal\\workspaces\\vecRecall",
+             "reports": "C:\\ai-arsenal\\reports\\arsenal",
+             "run": "C:\\ai-arsenal\\reports\\arsenal\\2026-10-26T22-41-08" },
   "reasons": [], "counts": {"total": 230, "passed": 230, "failed": 0, "skipped": 0},
+  "report_ok": true, "report_depth": "full", "report_problems": [],
   "artifacts": ["sandbox/arsenal-out/result.json", "sandbox/arsenal-out/logs/core.log"] }
 ```
 
+`paths` 是一次运行碰到的五个绝对路径（根／包／项目／报告目录／本次运行），
+不用再猜「测的是哪份副本、报告落在哪」——这个猜疑正是本平台曾经测错树的原因。
+`report_ok` 与 `report_problems` 记录报告体检结果，除非加 `--strict-report`，
+它们永远不改退出码。
+
 ## 数据没回来时
 
-沙箱里的结果还在，但宿主 `out/` 是空的——通常是窗口被关、进程被杀，
+沙箱里的结果还在，但运行目录是空的——通常是窗口被关、进程被杀，
 拉回那一步没跑完。不用重跑测试（白烧 token），直接收：
 
 ```
+arsenal.cmd --collect
+:: 或者不经过根启动器：
 python templates/runner.py --config config.json --collect
 ```
 
@@ -290,7 +313,8 @@ python templates/selftest.py
 ## 卸载
 
 ```
-sbx rm test-sandbox
+sbx rm <sandbox> --force
 ```
 
-然后删掉工作目录。没有向系统装任何东西。
+`--force` 是必须的：不带它会停在确认提示上等输入。然后删掉工作目录。
+没有向系统装任何东西。

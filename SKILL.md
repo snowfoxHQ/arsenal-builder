@@ -12,11 +12,13 @@ runs the test suite, and the **host decides the verdict**.
 The rule that makes this work: *the sandbox produces data, the host produces the
 verdict.* Never let the sandbox phrase the answer, and never let prose decide it.
 
+Current version: **3.0.1** — what changed and why is in `CHANGELOG.md`.
+
 ## When to use this skill
 
 - "set up an isolated testing platform", "build an AI arsenal", "配置 sbx 沙箱"
 - "my test pipeline always reports success", "the gate never fails"
-- Repairing an existing arsenal (this skill's v2 replaces the earlier package)
+- Repairing an existing arsenal (this package is **3.0.1** and replaces the v1/v2 packages)
 
 ## Architecture
 
@@ -119,16 +121,21 @@ The layout is: **documents, config and the launcher in the package root, all
 directory such as `C:\ai-arsenal\`:
 
 ```
-start_arsenal.bat     one-click launcher (run from the root)
+start_arsenal.bat     one-click launcher (also called by the root's arsenal.cmd)
 PROMPT.md             the prompt handed to the sandbox agent
-config.example.json   copy to config.json and edit
+config.example.json   copy to <ARSENAL_HOME>\config.json and edit
 result.schema.json    the contract, for reference
+README.md             package overview (Chinese) - README.en.md is the mirror
 templates/
   runner.py           drives the sandbox, pulls the result, sets the exit code
   arsenal_contract.py contract validation (the gate's logic)
   review.py           advisory DeepSeek commentary (never affects the verdict)
-  selftest.py         gate self-test (no sandbox needed)
+  selftest.py         gate self-test, 21 scenarios, no sandbox needed
 ```
+
+Two more entry points live in the root, not in the package: `arsenal.cmd` (the only
+one a human double-clicks - it sets `ARSENAL_HOME` and forwards every flag) and
+`install.bat` (idempotent install plus self-check).
 
 Then `copy config.example.json config.json` and set `project_dir`.
 
@@ -220,16 +227,22 @@ that skipped 10 assertions for a missing `cryptography` package looked like
 broken code. `passed` is still only `true` at exit 0, so any script that checks
 for zero keeps the same behaviour.
 
-Every run leaves a trail in `out/<run_id>/` — **a run directory is never empty**:
+Every run leaves a trail under `out_dir` — in a proper root that is
+`reports\arsenal\<run_id>\` — and **a run directory is never empty**:
 
 ```
-out/<run_id>/
-  summary.json                  the machine answer (state, reasons, counts, artifacts)
+<ARSENAL_HOME>\reports\arsenal\<run_id>\
+  summary.json                  the machine answer (state, reasons, counts, artifacts, paths)
   agent.log                     everything the agent printed, survives a closed window
   sandbox/arsenal-out/          the whole sandbox output dir, not two hard-coded files
     result.json  report.md  logs/…
-out/latest.txt                  path of the most recent run
+<ARSENAL_HOME>\reports\arsenal\latest.txt   path of the most recent run
+<ARSENAL_HOME>\last-run.txt                 same path, at the root, for the launcher
 ```
+
+Two pointers on purpose: `latest.txt` sits next to the run directories, `last-run.txt`
+sits at the root so the launcher can find the newest run without knowing where
+`out_dir` points or parsing anyone's prose.
 
 The whole directory is copied back on purpose: extra raw logs, coverage data or
 environment dumps the agent left behind come home automatically instead of being
@@ -238,18 +251,31 @@ dropped because the host did not know their names in advance.
 Read `summary.json` — it is the machine answer:
 
 ```json
-{ "state": "pass", "passed": true, "exit_code": 0,
+{ "run_id": "2026-10-26T22-41-08", "state": "pass", "passed": true, "exit_code": 0,
+  "paths": { "home": "C:\\ai-arsenal", "skill": "C:\\ai-arsenal\\skills\\arsenal-builder",
+             "project": "C:\\ai-arsenal\\workspaces\\vecRecall",
+             "reports": "C:\\ai-arsenal\\reports\\arsenal",
+             "run": "C:\\ai-arsenal\\reports\\arsenal\\2026-10-26T22-41-08" },
   "reasons": [], "counts": {"total": 230, "passed": 230, "failed": 0, "skipped": 0},
+  "report_ok": true, "report_depth": "full", "report_problems": [],
   "artifacts": ["sandbox/arsenal-out/result.json", "sandbox/arsenal-out/logs/core.log"] }
 ```
 
+`paths` is the five absolute paths a run touches (home / skill / project / reports / run),
+so nobody has to guess which copy of the project or which report directory was used -
+that question is exactly how this platform once tested the wrong tree. `report_ok`
+and `report_problems` record the report audit; they never change the exit code
+unless `--strict-report` is set.
+
 ## When the data did not come back
 
-The sandbox still holds the result but `out/` is empty — usually because the
+The sandbox still holds the result but the run directory is empty — usually because the
 window was closed or the process was killed before the pull-back ran. Do not
 rerun the suite (that burns tokens for a result you already have); collect it:
 
 ```
+arsenal.cmd --collect
+:: or, without the root launcher:
 python templates/runner.py --config config.json --collect
 ```
 
@@ -307,7 +333,8 @@ do not trust its PASS verdicts.
 ## Uninstall
 
 ```
-sbx rm test-sandbox
+sbx rm test-sandbox --force
 ```
 
-Then delete the workspace directory. Nothing was installed system-wide.
+`--force` matters: without it `sbx rm` asks for confirmation and sits there. Then
+delete the workspace directory. Nothing was installed system-wide.
