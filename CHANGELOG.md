@@ -466,3 +466,36 @@ Agent 严格照做，所以只给了这三样。v2 重写时全部精力都在�
 
 **没有改的**：`templates/*.py`、`PROMPT.md`、`config.example.json`、
 `result.schema.json` 一字未动；`selftest.py` 仍 21/21 ok。
+
+## v3.0.2 — 2026-10-26 23:57
+
+**包内 README 升级为完整手册：架构原理 + 实际操作步骤 + 故障排查。**
+
+用户反馈明确：README 里要有对这个 AI 测试「兵工厂」的**完整**介绍，不能只是
+「包里有什么」。v3.0.1 把包 README 做短只讲包，方向错了——zip 发出去就该
+自带全部原理与操作，不依赖读者再去翻根目录。
+
+新增内容（全部与代码逐条核对过，不是抄散文）：
+
+- **1.1 它防的是什么**：三类真实事故（假成功／门禁是 print／报告缩水）与对策
+- **1.2 信任边界**：宿主 vs 沙箱的信任级别与职责；三条推论——数据只拉不推、
+  散文不参与判定、fail-closed
+- **1.3 一次运行的完整生命周期**：`runner.py` 六步（preflight → ensure → execute →
+  fetch → validate → exit code）的宿主/沙箱两侧时序图；沙箱绑定校验放在第 2 步里讲
+- **1.4 门禁校验清单**：`arsenal_contract.py` 的八条 fail-closed 检查
+- **1.5 退出码契约**：0/1/2/3 各自的典型原因，BLOCKED 为什么独立
+- **1.6 一个根**：根的布局、两条路径契约、四级根解析、为什么报告不进包
+- **1.7 报告**：九节大纲逐节要求、`report_language`/`report_depth` 两个开关、
+  独立体检与阈值示例
+- **1.8 安全红线**：六条，含 `sbx setup` 实测翻车记录
+- **第二节 实操**：第 0 步前置（setx 用户级 Key）→ 第 1 步网络策略（含 pypi 放行）→
+  第 2 步安装（`arsenal.cmd install` + config 关键字段逐个解释）→ 第 3 步先
+  `--dry-run` 再全跑 → 第 4 步读 `summary.json`（字段速查）；日常四命令 + 自检 + 卸载
+- **第三节 故障排查表**：八种症状 → 原因 → 处理（绑错目录、数据没回来、
+  BLOCKED、薄报告、缺 .git、bat 闪退、批处理乱码、依赖 403）
+
+同步改动：`README.en.md` 英文镜像；根 README 的「文档在哪」改为新的分工铁律——
+**机器的事在根 README，平台的事在包 README**。
+
+**没有改的**：`templates/*.py`、`PROMPT.md`、`config.example.json`、
+`result.schema.json` 一字未动；selftest 仍 21/21 ok。
