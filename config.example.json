@@ -1,0 +1,15 @@
+{
+  "sandbox": "test-sandbox",
+  "project_dir": "C:/path/to/your/repo",
+  "workspace_mode": "clone",
+  "i_accept_bind_mount_risk": false,
+  "sandbox_out_dir": "/tmp/arsenal-out",
+  "result_name": "result.json",
+  "report_name": "report.md",
+  "expect_commit": null,
+  "sbx_bin": "sbx",
+  "prompt_file": "PROMPT.md",
+  "report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
+  "out_dir": "out",
+  "recreate": false
+}
