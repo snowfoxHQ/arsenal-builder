@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import time
 from typing import Any, Callable, Dict, Optional
 
 from . import signing
 
 DEFAULT_DB_PATH = os.environ.get("ARSENAL_ORDERS_DB", "")
+
+
+class OrderConflictError(RuntimeError):
+    """`out_trade_no` 或 `trade_no` 唯一约束冲突。"""
 
 PAY_OPEN = ("PENDING_PAYMENT", "PAID")
 FULFILL_OPEN = ("UNFULFILLED", "PENDING_CONFIRM", "FULFILLED")
@@ -65,28 +68,49 @@ class OrderRepository:
 
     def create_pending(self, order: Dict[str, Any]) -> None:
         now = signing.format_alipay_timestamp()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO orders (
+                           out_trade_no, amount, currency, resource_id, goods_name,
+                           pay_before, order_status, fulfill_status, trade_no,
+                           service_result, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        order["out_trade_no"],
+                        signing.normalize_amount(order["amount"]),
+                        order.get("currency", "CNY"),
+                        order["resource_id"],
+                        order["goods_name"],
+                        order["pay_before"],
+                        order.get("order_status", "PENDING_PAYMENT"),
+                        order.get("fulfill_status", "UNFULFILLED"),
+                        order.get("trade_no") or None,
+                        order.get("service_result"),
+                        now,
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise OrderConflictError(f"订单号已存在：{order['out_trade_no']}") from exc
+
+    def purge_expired_pending(self, ttl_hours: int = 24) -> int:
+        """清理超时未支付的订单，避免未付费请求无限堆积。
+
+        只删除未关联 `trade_no` 且状态仍为 `PENDING_PAYMENT/UNFULFILLED` 的记录；
+        已进入履约流程的订单一律保留，防止破坏幂等。
+        """
+        cutoff = signing.minus_hours_timestamp(ttl_hours)
         with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO orders (
-                       out_trade_no, amount, currency, resource_id, goods_name,
-                       pay_before, order_status, fulfill_status, trade_no,
-                       service_result, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    order["out_trade_no"],
-                    signing.normalize_amount(order["amount"]),
-                    order.get("currency", "CNY"),
-                    order["resource_id"],
-                    order["goods_name"],
-                    order["pay_before"],
-                    order.get("order_status", "PENDING_PAYMENT"),
-                    order.get("fulfill_status", "UNFULFILLED"),
-                    order.get("trade_no") or None,
-                    order.get("service_result"),
-                    now,
-                    now,
-                ),
+            cursor = connection.execute(
+                """DELETE FROM orders
+                     WHERE order_status = 'PENDING_PAYMENT'
+                       AND fulfill_status = 'UNFULFILLED'
+                       AND (trade_no IS NULL OR trade_no = '')
+                       AND created_at < ?""",
+                (cutoff,),
             )
+        return cursor.rowcount
 
     def find_by_out_trade_no(self, out_trade_no: str) -> Optional[Dict[str, Any]]:
         with self._connect() as connection:
@@ -200,7 +224,9 @@ def resolve_db_path(project_root) -> str:
 
 
 def build_repository(project_root) -> OrderRepository:
-    return OrderRepository(resolve_db_path(project_root))
+    repository = OrderRepository(resolve_db_path(project_root))
+    repository.purge_expired_pending()
+    return repository
 
 
 def new_order(resource_id: str, goods_name: str, amount: str) -> Dict[str, Any]:

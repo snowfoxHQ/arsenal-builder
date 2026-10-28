@@ -19,10 +19,8 @@ SDK 请求签名直接使用原始字段，不做 PEM 包装、Base64 重编码�
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
@@ -225,9 +223,27 @@ def verify_payment_and_deliver_resource(payment_proof: str, resource_id: str):
     )
 
     if not fulfillment or fulfillment.get("state") not in ("PENDING_CONFIRM", "FULFILLED"):
-        raise RuntimeError("prepare_fulfillment 未返回已持久化的履约结果")
+        # 验付已通过，但本地订单不满足履约条件（已过 pay_before、状态不允许或归属不匹配）。
+        # 此处绝不能返回 402 —— 那会让已付款的买家重复付款。返回 409 并带上订单号供人工核对。
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "ORDER_NOT_FULFILLABLE",
+                "message": "付款已核验，但本地订单不满足履约条件（可能已过期或状态不允许）。请勿重复付款，请联系商家并携带订单号核对。",
+                "out_trade_no": verify_out_trade_no,
+                "trade_no": verify_trade_no,
+            },
+        )
     if not fulfillment.get("service_result"):
-        raise RuntimeError("资源为空，禁止交付")
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "RESOURCE_EMPTY",
+                "message": "资源生成为空，禁止交付空资源。请稍后使用同一 Payment-Proof 重试。",
+                "out_trade_no": verify_out_trade_no,
+                "trade_no": verify_trade_no,
+            },
+        )
 
     service_result = fulfillment["service_result"]
 

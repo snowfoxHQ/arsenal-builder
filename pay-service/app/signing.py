@@ -41,6 +41,14 @@ def format_alipay_timestamp(dt: Optional[datetime] = None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def minus_hours_timestamp(hours: int) -> str:
+    """返回 `hours` 小时前的支付宝格式时间戳，用于清理过期未支付订单。
+
+    与 `created_at` 同为 `yyyy-MM-dd HH:mm:ss`，可直接做字符串比较。
+    """
+    return format_alipay_timestamp(datetime.now() - timedelta(hours=hours))
+
+
 def generate_out_trade_no() -> str:
     return f"ARSENAL_{int(time.time() * 1000)}_{uuid.uuid4().hex[:12]}"
 
