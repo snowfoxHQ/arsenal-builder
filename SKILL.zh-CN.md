@@ -324,3 +324,85 @@ sbx rm <sandbox> --force
 
 `--force` 是必须的：不带它会停在确认提示上等输入。然后删掉工作目录。
 没有向系统装任何东西。
+
+## 付费接入（Pay Skill）
+
+`arsenal-builder` 是**整体收费**的付费技能：每次调用都先过付费门禁，
+门禁不通过则不执行任何沙箱动作。单次价格 **0.01 元**（支付宝登记价、
+SkillHub 展示价、服务端 402 账单金额三者必须一致）。
+
+**触发词**：跑一次 Arsenal 门禁、run arsenal gate、arsenal sandbox test、
+sbx 沙箱测试。
+
+**输入参数**：`project_dir`（待测试仓库），可选 `--report-depth`
+（`full` | `brief`）、可选 `--strict-report`。
+
+**依赖安装（买家侧）**：
+
+```
+npx -y @alipay/agent-payment@latest install
+```
+
+**调用流程**（`scripts/arsenal-paid.mjs` 三个本地子命令）：
+
+```
+probe    → 请求资源接口；未付款时预期 HTTP 402 + `Payment-Needed` 响应头，
+           账单与原始请求落地保存，供付款后复用
+pay      → 把账单与原始请求交给支付宝官方买家 CLI
+           （`alipay-bot 402-buyer-pay`），展示用途、金额与支付入口，
+           等待用户扫码授权
+complete → 付款后按 `out_shake_no` 查询**原订单**，继续原始资源请求；
+           服务端验证 `Payment-Proof` 后返回资源并完成商家履约确认
+```
+
+脚本只负责编排，不接触支付密钥，也不自行实现付款或签名。
+
+**架构分工**
+
+| 一侧 | 位置 | 职责 |
+| --- | --- | --- |
+| 服务端 | `pay-service/`（**独立部署**，不放入 Skill 包） | 402 账单、验付、交付资源、履约确认、订单幂等 |
+| Skill | `SKILL.md` + `scripts/arsenal-paid.mjs` | 发起请求、调用官方支付能力、展示结果 |
+
+门禁点位于 `templates/runner.py` 的最前面：probe 不通过，后续全流程不执行。
+`templates/selftest.py` 保持**免费**，它是你自证门禁没被改造改坏的唯一手段。
+
+**服务端契约**
+
+- 无有效 `Payment-Proof` → HTTP `402` + `Payment-Needed` 响应头
+  （`{"protocol":{...},"method":{...}}` 的 Base64URL 编码）。
+  响应体只用于调试，智能体支付依据是**响应头**。
+- `protocol`：`out_trade_no`、`amount`、`currency=CNY`、`resource_id`、
+  `pay_before`、`seller_signature`、`seller_sign_type=RSA2`、`seller_unique_id`。
+- `method`：`seller_name`、`seller_id`、`seller_app_id`、`goods_name`、
+  `seller_unique_id_key=seller_id`、`service_id`。
+- 接口只实现：`402`、`alipay.aipay.agent.payment.verify`、
+  `alipay.aipay.agent.fulfillment.confirm`。不混入统一收单、
+  异步通知或 `notify_url`。
+- 沙箱 `service_id` 固定 `api_mock_service_id`，正式上线前必须替换为
+  服务市场注册所得的真实 `serviceId`。
+- 私钥：Python 属非 Java 语言，统一使用 `appPrivatePkcsKey`（PKCS#1）。
+  禁止使用 `appPrivateKey`，禁止 PEM 包装、Base64 重编码或换行处理。
+- 验付必须同时校验 `active === true`、金额一致、`out_trade_no` 一致、
+  `resource_id` 一致、`trade_no` 未重复履约、本地订单状态在允许集合内。
+  任一不满足即返回 402。
+
+**本地模拟测试**（真实付款前必做）：
+
+```
+node scripts/arsenal-paid.mjs mock 402
+node scripts/arsenal-paid.mjs mock processing
+node scripts/arsenal-paid.mjs mock success
+node scripts/arsenal-paid.mjs mock failed
+node scripts/arsenal-paid.mjs mock retry
+```
+
+服务启动：在 `pay-service/` 下执行 `uvicorn app.main:app --host 0.0.0.0 --port 8000`，
+然后从服务器之外验证公网端点返回 402：
+
+```
+curl -i --connect-timeout 10 --max-time 30 'https://<你的域名>/arsenal/run'
+```
+
+`pay-service/.alipay-sandbox.json`、`.env` 和 `var/` 一律不得入库，
+也不得打进 Skill 的 zip 包。

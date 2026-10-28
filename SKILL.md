@@ -344,3 +344,89 @@ sbx rm test-sandbox --force
 
 `--force` matters: without it `sbx rm` asks for confirmation and sits there. Then
 delete the workspace directory. Nothing was installed system-wide.
+
+## Paid access (Pay Skill)
+
+`arsenal-builder` is an **overall-charge** paid skill: every invocation is gated by
+a payment check **before** any sandbox work happens. Price: **CNY 0.01 per call**
+(Alipay registered price, SkillHub listing price and the server-side 402 bill must
+all stay identical).
+
+**Trigger words**: 跑一次 Arsenal 门禁, run arsenal gate, arsenal sandbox test,
+sbx 沙箱测试.
+
+**Inputs**: `project_dir` (repository to test), optional `--report-depth`
+(`full` | `brief`), optional `--strict-report`.
+
+**Dependencies (buyer side)**:
+
+```
+npx -y @alipay/agent-payment@latest install
+```
+
+**Call flow** (`scripts/arsenal-paid.mjs`, three local subcommands):
+
+```
+probe    → GET/POST the resource URL; expect HTTP 402 + `Payment-Needed`
+           header; the bill and the original request are persisted for reuse
+pay      → hand the bill and the original request to the official Alipay buyer
+           CLI (`alipay-bot 402-buyer-pay`); show purpose, amount and payment
+           entry; wait for the user to scan and authorise
+complete → after payment, query the **original** order by `out_shake_no` and
+           resume the original resource request; the server verifies the
+           `Payment-Proof`, returns the resource and confirms fulfilment
+```
+
+The script only orchestrates. It never touches a payment key and never
+implements signing or payment itself.
+
+**Architecture split**
+
+| Side | Location | Responsibility |
+| --- | --- | --- |
+| Server | `pay-service/` (**deployed separately**, excluded from the Skill package) | 402 bill, verify `Payment-Proof`, deliver resource, fulfilment confirm, order idempotency |
+| Skill | `SKILL.md` + `scripts/arsenal-paid.mjs` | initiate the request, invoke the official payment CLI, display the result |
+
+The gate sits at the very front of `templates/runner.py`: if `probe` does not
+resolve, nothing downstream runs. `templates/selftest.py` stays **free** — it is
+how you prove the gate itself was not broken by the retrofit.
+
+**Server contract**
+
+- No valid `Payment-Proof` → HTTP `402` + `Payment-Needed` header (Base64URL of
+  `{"protocol":{...},"method":{...}}`). The response body is for debugging only;
+  the agent pays against the **header**.
+- `protocol`: `out_trade_no`, `amount`, `currency=CNY`, `resource_id`,
+  `pay_before`, `seller_signature`, `seller_sign_type=RSA2`, `seller_unique_id`.
+- `method`: `seller_name`, `seller_id`, `seller_app_id`, `goods_name`,
+  `seller_unique_id_key=seller_id`, `service_id`.
+- Interfaces: only `402`, `alipay.aipay.agent.payment.verify` and
+  `alipay.aipay.agent.fulfillment.confirm`. No unified acquiring, no async
+  notify, no `notify_url`.
+- Sandbox `service_id` is fixed to `api_mock_service_id` and must be replaced
+  with the real service-market `serviceId` before production.
+- Private key: Python is non-Java, so it uses `appPrivatePkcsKey` (PKCS#1).
+  Never `appPrivateKey`, never PEM wrapping, never re-encoding.
+- Verification must check `active === true`, amount equality, `out_trade_no`
+  equality, `resource_id` equality, no double fulfilment per `trade_no`, and an
+  explicit allowed order/fulfilment status. Any failure returns 402.
+
+**Local mock test** (before any real payment):
+
+```
+node scripts/arsenal-paid.mjs mock 402
+node scripts/arsenal-paid.mjs mock processing
+node scripts/arsenal-paid.mjs mock success
+node scripts/arsenal-paid.mjs mock failed
+node scripts/arsenal-paid.mjs mock retry
+```
+
+Run the server with `uvicorn app.main:app --host 0.0.0.0 --port 8000` from
+`pay-service/`, then verify the public endpoint returns 402:
+
+```
+curl -i --connect-timeout 10 --max-time 30 'https://<your-domain>/arsenal/run'
+```
+
+`pay-service/.alipay-sandbox.json`, `.env` and `var/` must never be committed
+or shipped inside the Skill zip.
