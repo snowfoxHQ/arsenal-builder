@@ -95,7 +95,7 @@ EXIT_BLOCKED = 3
 
 # Kept in step with the root VERSION.txt; run_manifest.json records it so two
 # runs can be told apart by tooling, not by humans reading dates.
-RUNNER_VERSION = "3.3.2"
+RUNNER_VERSION = "3.3.3"
 
 # Config keys that describe one run rather than the environment it ran in.
 # Excluded from the fingerprint - they differ between runs on purpose.
@@ -695,6 +695,14 @@ def load_profile(home, name):
 
 
 def main(argv=None):
+    # A GBK console cannot encode the "✓" that sbx prints during create; on
+    # 2026-11-05 that UnicodeEncodeError aborted a run the CLI had completed.
+    # Degrade the glyph, never the run.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:  # noqa: BLE001 - exotic streams: keep going regardless
+        pass
+
     parser = argparse.ArgumentParser(description="Arsenal test pipeline runner")
     parser.add_argument("--config", default="config.json")
     parser.add_argument(
@@ -998,10 +1006,16 @@ def main(argv=None):
 
         verdict = validate(
             find_artifact(run_dir, config["result_name"]) if got_result else None,
-            config.get("expect_commit"),
-            # --collect is explicit data recovery: the run that produced the
-            # output is over, so there is no nonce to demand. Everything else
-            # must prove the result was written by this run.
+            config.get("expect_commit")
+            # A result whose commit differs from the tree the manifest records
+            # is the "tested another copy" incident: 2026-11-05, demo run - a
+            # branch switch left the clone-mode sandbox on the old HEAD, the
+            # agent honestly tested stale code and the basic tier passed it.
+            # result.commit vs manifest.project_commit is a zero-parse check
+            # the gate must not skip, so the manifest backstops expect_commit
+            # whenever the config does not pin one. --collect is explicit data
+            # recovery, not a freshness claim: same exemption as the run_id.
+            or (None if args.collect else manifest.get("project_commit")),
             expect_run_id=None if args.collect else run_id,
         )
     except Exception as exc:  # noqa: BLE001 - any crash still owes the host a record

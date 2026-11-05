@@ -36,6 +36,12 @@ state = os.environ["FAKE_SBX_STATE"]
 args = sys.argv[1:]
 cmd = args[0] if args else ""
 
+# Guard against argv fattening: the real CLI dies on `sbx sbx create`, and a
+# lenient fake hid exactly that bug on 2026-11-05. Refuse loudly instead.
+if cmd == "sbx":
+    print("error: duplicated binary in argv (sbx sbx ...)")
+    sys.exit(9)
+
 def read(name, default=""):
     path = os.path.join(state, name)
     if not os.path.exists(path):
@@ -211,7 +217,7 @@ with open(result_path, "w", encoding="utf-8") as fh:
     fh.write(json.dumps({
         "project": "fixture",
         "run_id": run_id,
-        "commit": "7f3a2c9",
+        "commit": "__HOST_HEAD__",
         "started_at": "2026-01-01T09:00:00+08:00",
         "finished_at": "2026-01-01T09:01:00+08:00",
         "total": 10, "passed": 10, "failed": 0, "skipped": 0,
@@ -229,7 +235,7 @@ sys.exit(0)
 def make_result(**overrides):
     data = {
         "project": "vecRecall",
-        "commit": "7f3a2c9",
+        "commit": HOST_HEAD,
         "started_at": "2026-10-26T18:00:00+08:00",
         "finished_at": "2026-10-26T18:12:31+08:00",
         "total": 230,
@@ -1108,6 +1114,20 @@ SCENARIOS = [
         "expect_commit": "7f3a2c9",
     },
     {
+        "name": "result from another tree",
+        "setup": lambda s: stage(
+            s,
+            make_result(commit="deadbeef" + "0" * 32),
+            0,
+            b"",
+        ),
+        "expect": 1,
+        "why": "2026-11-05 demo regression: a branch switch left the clone-mode "
+        "sandbox on the old HEAD, the agent honestly tested stale code and the "
+        "basic tier passed it. result.commit vs the manifest commit is a "
+        "zero-parse check the gate must not skip, config pin or not",
+    },
+    {
         "name": "no project_dir",
         "setup": lambda s: stage(s, make_result(), 0, b""),
         "expect": 2,
@@ -1294,7 +1314,7 @@ def main():
         os.environ["FAKE_DOCKER_STATE"] = DOCKER["state"]
 
         with open(os.path.join(root, "fake_agent.py"), "w", encoding="utf-8") as fh:
-            fh.write(FAKE_AGENT)
+            fh.write(FAKE_AGENT.replace("__HOST_HEAD__", HOST_HEAD))
         NONE["fake_agent"] = os.path.join(root, "fake_agent.py")
 
         print("arsenal self-test")

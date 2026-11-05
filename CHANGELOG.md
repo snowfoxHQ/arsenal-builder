@@ -696,3 +696,50 @@ basic 忽略日志），三套件全绿。config.example.json 补齐全部新键
   「门禁点位于 runner.py 最前面」仍为规划态描述（门禁未接线，本次不动）。
 - selftest：36 场景（新增 strict 假绿 FAIL / 无证据 FAIL / 证据一致
   PASS）+ 四套件全绿。
+
+## v3.3.3 — 2026-11-05
+
+**演示靶真机验证逼出的三个真 bug。** 每个都有出生事故；这是 `PLAN.md`
+阶段一 1.1 的全部产出。
+
+### 1. 测了另一棵树却判 PASS（判定缺口，最重要）
+
+重跑演示靶时宿主切到了 `demo/regression` 分支，但 clone 模式沙箱还停在
+创建时的旧 HEAD；agent 诚实地测了旧代码并全绿申报，basic 档照单全收——
+**项目立项要杀的头号事故在自家演示靶上复活**。
+
+- 修复：`validate()` 的 `expect_commit` 现在由 **manifest 的
+  `project_commit` 兜底**（配置未显式钉 commit 时）。`result.commit` 与
+  manifest commit 不符 → FAIL。零解析、纯机器可查，`--collect` 豁免
+  （数据回收不是新鲜度声明）。
+- selftest 新增场景 `result from another tree`：申报 commit 与夹具 HEAD
+  不符 → 1。37 场景全绿。
+- 遗留（PLAN 1.4）：clone 重跑仍不自动刷新沙箱源码，切分支需
+  `--recreate`；现在至少会被门禁抓住而不是假绿。
+
+### 2. `sbx sbx create`：假后端掩盖的 argv 缺陷
+
+`SbxBackend.create()` 用 `_cmd()` 拼好完整命令后又交给 `_run(*cmd)`，
+而 `_run` 内部还会再拼一次二进制 → 真实命令 `sbx sbx create ...`，
+真实 CLI 直接 `unknown command`。假 sbx 只看 `argv[0]`，不挑食，
+于是 37 个场景一路绿灯——**假后端也会说谎**。
+
+- 修复：`create()` 只传参数给 `_run()`。
+- 假 sbx 加固：`argv[0] == "sbx"` 即以 9 退出（"duplicated binary in
+  argv"）。同类回归今后逃不过自检。
+
+### 3. GBK 控制台吞掉 ✓：一次运行被判成 ERROR
+
+`sbx create` 的进度输出含 `✓`，GBK 控制台 `print` 抛
+`UnicodeEncodeError`，整次运行以 ERROR(2) 收场——CLI 明明成功。
+
+- 修复：`main()` 启动时 `sys.stdout.reconfigure(errors="replace")`。
+  字形降级，运行不降级。
+
+### 实测（真机，同一台机器）
+
+| 运行 | 结果 |
+| --- | --- |
+| main + 重建沙箱 | **PASS(0)**，19/19 |
+| regression，沙箱停在旧 HEAD（不重建） | **FAIL(1)**，`commit mismatch: got d0ffef6…, expected 5f485db…` |
+| regression + `--recreate` | **FAIL(1)**，19 中 1 失败（真实测试失败） |

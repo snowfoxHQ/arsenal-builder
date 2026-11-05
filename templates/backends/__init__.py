@@ -224,11 +224,14 @@ class SbxBackend(SandboxBackend):
 
         mode = str(self.config["workspace_mode"]).lower()
         project = os.path.abspath(self.config["project_dir"])
-        cmd = self._cmd("create", "--name", self.config["sandbox"])
+        # _run() prepends the binary itself: pass arguments only. Passing a
+        # list built with _cmd() produced `sbx sbx create` (2026-11-05) - the
+        # fake accepted it, the real CLI did not.
+        args = ["create", "--name", self.config["sandbox"]]
         if mode == "clone":
-            cmd.append("--clone")
-        cmd += ["claude", project]
-        result = self._run(*cmd)
+            args.append("--clone")
+        args += ["claude", project]
+        result = self._run(*args)
         if result.stdout.strip():
             print(result.stdout, end="", flush=True)
         if result.returncode != 0:
