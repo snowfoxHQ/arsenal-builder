@@ -26,6 +26,7 @@ import time
 
 from arsenal_contract import Verdict, load_json, validate
 from backends import BackendError, BackendUnavailable, get_backend
+from logparse import cross_check, parse_test_logs
 
 DEFAULT_CONFIG = {
     # Which sandbox backend drives the run. "sbx" is the reference
@@ -48,6 +49,13 @@ DEFAULT_CONFIG = {
     # The agent writes the report in this language. Kept in config because a
     # report nobody can read is the same as no report; the gate never parses it,
     # so switching it cannot change a verdict.
+    # basic  - the classic gate: counts self-consistent, no failures, commit
+    #          matches, result fresh. Nothing else is inspected.
+    # standard - additionally cross-checks the claim against the raw suite
+    #          logs the run pulled back (host-side parsing, not agent prose).
+    #          Contradictions become suspects: the run is BLOCKED, not PASS.
+    # strict is reserved for a future tier that turns suspects into failures.
+    "precision": "basic",
     "report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
     # full  - all nine sections of the outline in PROMPT.md (the default, because
     #         a report is written for a person deciding whether to adopt a project)
@@ -1009,6 +1017,23 @@ def main(argv=None):
     if report_problems and args.strict_report and exit_code == EXIT_PASS:
         exit_code = EXIT_FAIL
 
+    # precision=standard: cross-check the claim against the raw suite logs the
+    # run pulled back. The host parses the logs itself - agent prose is not
+    # evidence. Suspects demote a PASS to BLOCKED (never FAIL on their own: a
+    # parser that misreads an exotic format must not brand an honest run broken).
+    suspects = []
+    if (
+        not error
+        and str(config.get("precision") or "basic").strip().lower() == "standard"
+        and isinstance(verdict.data, dict)
+    ):
+        suspects = cross_check(parse_test_logs(run_dir), verdict.data)
+        if suspects:
+            verdict.blocked_reasons.extend("suspect: %s" % s for s in suspects)
+            verdict.ok = False
+            if exit_code == EXIT_PASS:
+                exit_code = verdict.code
+
     print("", flush=True)
     print("=" * 62, flush=True)
     if error:
@@ -1089,6 +1114,8 @@ def main(argv=None):
         "backend": config.get("backend") or "sbx",
         "manifest": manifest,
         "manifest_hash": manifest_hash(manifest),
+        "precision": config.get("precision") or "basic",
+        "suspects": suspects,
         "report_ok": not report_problems,
         "report_depth": config.get("report_depth"),
         "report_problems": report_problems,

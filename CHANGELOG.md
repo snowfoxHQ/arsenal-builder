@@ -641,3 +641,25 @@ run_manifest.json 且 project_commit 与夹具 HEAD 一致。全绿。
 selftest：新增 lifecycle 套件（baseline 干净跑 → sabotage exec.rc=137 验证
 跳过 → 阶段记录改 137 验证重跑 → 改 manifest 验证拒绝 → profile 指向非 git
 目录验证覆盖生效），29 场景 + 三套件全绿。
+
+## v3.3.0 — 2026-11-05
+
+**高精度第一步：宿主侧日志取证 + precision 档位（basic / standard）。**
+
+result.json 是 agent 自报的——把「套件级计数」换成「用例级列表」只是把信任
+问题挪个地方。真正的增量由**宿主自己解析收回的原始日志**产生（PROMPT 本就
+要求 agent 留下未编辑的 `logs/test*.log`）：
+
+- 新增 `templates/logparse.py`（纯标准库）：识别 unittest（`Ran N tests` +
+  `OK` / `FAILED (failures=M)`）、pytest 汇总行、自写脚本计数器（`148/148`，
+  只比对 passed——计数器外的 skip 推成 failed 是撒谎）。解析不出的格式
+  贡献零证据，也零怀疑。
+- `precision: basic`（默认，行为与之前完全一致）| `standard`：交叉检查——
+  ① 日志有失败而申报 0 失败（假绿候选）② 有 skip 但 `blocked` 无原因
+  ③ skip 率 >50% ④ 日志通过数 ≠ 申报通过数。命中 → suspect：**PASS 降级
+  BLOCKED（退出码 3），不直接 FAIL**——解析器误读奇异格式不能冤枉诚实运行。
+  strict 留位（suspect 算失败），待 standard 稳定后启用。
+- summary.json 新增 `precision` / `suspects`。
+
+selftest：33 场景（新增 standard 假绿捕获 / 无因 skip / 日志一致 /
+basic 忽略日志），三套件全绿。config.example.json 补齐全部新键。

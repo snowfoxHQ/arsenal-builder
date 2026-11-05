@@ -318,7 +318,11 @@ def reset_state(state):
     files = os.path.join(state, "files")
     if os.path.isdir(files):
         for name in os.listdir(files):
-            os.unlink(os.path.join(files, name))
+            path = os.path.join(files, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.unlink(path)
     # a sandbox is created on first run, so pre-mark it as existing
     open(os.path.join(state, "exists"), "w").close()
 
@@ -1146,6 +1150,51 @@ SCENARIOS = [
             "agent_bin": lambda cfg: [sys.executable, NONE["fake_agent"]],
         },
     },
+    {
+        "name": "standard: false green caught",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "Ran 230 tests in 1.2s\nFAILED (failures=7)\n"),
+        ),
+        "expect": 3,
+        "why": "raw logs show failures the result claims do not exist",
+        "config": {"precision": "standard"},
+    },
+    {
+        "name": "standard: skips without reasons",
+        "setup": lambda s: (
+            stage(
+                s,
+                make_result(passed=220, skipped=10),
+                0,
+                b"",
+            ),
+            _stage_log(s, "test_core.log", "Ran 220 tests in 1.2s\nOK\n"),
+        ),
+        "expect": 3,
+        "why": "skips with no blocked reasons are unverified, not passed",
+        "config": {"precision": "standard"},
+    },
+    {
+        "name": "standard: consistent logs",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "Ran 230 tests in 1.2s\nOK\n"),
+        ),
+        "expect": 0,
+        "why": "logs that agree with the claim add no suspects",
+        "config": {"precision": "standard"},
+    },
+    {
+        "name": "basic ignores logs",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "Ran 230 tests in 1.2s\nFAILED (failures=7)\n"),
+        ),
+        "expect": 0,
+        "why": "precision=basic keeps the classic gate - no log forensics",
+        "config": {"precision": "basic"},
+    },
 ]
 
 
@@ -1159,6 +1208,14 @@ def _stage_docker(state, workspace=None, exec_rc=0, exec_output=b""):
         fh.write(str(exec_rc))
     with open(os.path.join(state, "exec.bin"), "wb") as fh:
         fh.write(exec_output)
+
+
+def _stage_log(state, name, text):
+    """Stage a raw suite log the way the agent would have left it."""
+    logs = os.path.join(state, "files", "logs")
+    os.makedirs(logs, exist_ok=True)
+    with open(os.path.join(logs, name), "w", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 def main():
