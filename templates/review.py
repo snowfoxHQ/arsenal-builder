@@ -19,11 +19,20 @@ import urllib.error
 import urllib.request
 
 from arsenal_contract import load_json, validate
-from runner import find_artifact
+from runner import BASE_URL, find_artifact
 
-ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages"
-MODEL = "deepseek-flash"
+# The endpoint is derived from the configured base URL - one value, two
+# consumers (runner writes it into the agent env, review builds its own
+# URL). Duplicating the vendor string here is how drift starts.
 KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
+MODEL = "deepseek-flash"  # default; config "review_model" overrides
+
+
+def _load_overrides(config_path):
+    config = load_json(config_path) or {}
+    base = str(config.get("anthropic_base_url") or BASE_URL).rstrip("/")
+    model = str(config.get("review_model") or MODEL).strip() or MODEL
+    return base + "/v1/messages", model
 
 
 def post_json(url, headers, payload, timeout=60):
@@ -42,7 +51,14 @@ def main(argv=None):
         default="简体中文",
         help="language for the commentary (default: 简体中文)",
     )
+    parser.add_argument(
+        "--config",
+        default="config.json",
+        help="arsenal config, read for anthropic_base_url / review_model",
+    )
     args = parser.parse_args(argv)
+
+    endpoint, model = _load_overrides(args.config)
 
     # The artifacts live under sandbox/arsenal-out/ after the directory copy,
     # so resolve them instead of assuming they sit at the run root.
@@ -86,14 +102,14 @@ def main(argv=None):
         "content-type": "application/json",
     }
     payload = {
-        "model": MODEL,
+        "model": model,
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
     }
 
     print("\n顾问点评（不影响判定）：")
     try:
-        response = post_json(ENDPOINT, headers, payload)
+        response = post_json(endpoint, headers, payload)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:400]
         print("  不可用：HTTP %s %s" % (exc.code, detail))

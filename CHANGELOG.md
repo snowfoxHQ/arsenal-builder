@@ -663,3 +663,19 @@ result.json 是 agent 自报的——把「套件级计数」换成「用例级�
 
 selftest：33 场景（新增 standard 假绿捕获 / 无因 skip / 日志一致 /
 basic 忽略日志），三套件全绿。config.example.json 补齐全部新键。
+
+## v3.3.1 — 2026-11-05
+
+**供应商收敛：端点/模型进 config，两份硬编码归一。**
+
+- `anthropic_base_url`（默认 DeepSeek 的 Anthropic 兼容端点）：runner 写进
+  agent env（`ANTHROPIC_BASE_URL`），review.py 由它拼 `/v1/messages`——
+  一份值、两个消费者，原先 runner/review 各写一份正是项目自己批判的
+  重复枚举温床。换供应商 = 改一个配置字段。
+- `agent_model`（可选，传 `--model` 给 agent CLI，缺省用 CLI 默认）与
+  `review_model`（顾问点评模型，缺省 deepseek-flash）分离——两个消费者
+  用模型的权利各自独立。
+- 端点进 config 指纹：换供应商的两次运行 manifest 必然不可比，这是语义
+  而非副作用。
+- selftest 新增 endpoint config 套件（默认值未漂移 + 配置覆盖真实到达
+  env 文件）。33 场景 + 四套件全绿。

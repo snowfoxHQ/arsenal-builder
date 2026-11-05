@@ -56,6 +56,11 @@ DEFAULT_CONFIG = {
     #          Contradictions become suspects: the run is BLOCKED, not PASS.
     # strict is reserved for a future tier that turns suspects into failures.
     "precision": "basic",
+    # Vendor endpoint for the agent (and review.py). Switching providers is a
+    # config edit on purpose - see BASE_URL above. agent_model, when set, is
+    # passed to the agent CLI as --model; None keeps the CLI's own default.
+    "anthropic_base_url": "https://api.deepseek.com/anthropic",
+    "agent_model": None,
     "report_language": "简体中文（技术专有名词、命令、路径、代码、测试名保留英文原文）",
     # full  - all nine sections of the outline in PROMPT.md (the default, because
     #         a report is written for a person deciding whether to adopt a project)
@@ -87,13 +92,16 @@ EXIT_BLOCKED = 3
 
 # Kept in step with the root VERSION.txt; run_manifest.json records it so two
 # runs can be told apart by tooling, not by humans reading dates.
-RUNNER_VERSION = "3.2.0"
+RUNNER_VERSION = "3.3.1"
 
 # Config keys that describe one run rather than the environment it ran in.
 # Excluded from the fingerprint - they differ between runs on purpose.
 VOLATILE_CONFIG_KEYS = ("run_id", "recreate", "home", "config_path")
 
 KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
+# Default vendor endpoint. Configurable via "anthropic_base_url" - switching
+# providers must be a config edit, not a code edit; two copies of this value
+# (runner + review) is exactly the duplicated-family trap the README warns about.
 BASE_URL = "https://api.deepseek.com/anthropic"
 
 
@@ -371,14 +379,14 @@ def agent_stage_done(run_dir, config, manifest_sha, run_id):
     return isinstance(data, dict) and data.get("run_id") == run_id
 
 
-def write_env_file(api_key):
+def write_env_file(config):
     """Write the key to a 0600 temp file so it never reaches argv."""
     handle = tempfile.NamedTemporaryFile(
         mode="w", prefix="arsenal-env-", suffix=".env", delete=False, encoding="utf-8"
     )
     try:
-        handle.write("%s=%s\n" % (KEY_ENV, api_key))
-        handle.write("ANTHROPIC_BASE_URL=%s\n" % BASE_URL)
+        handle.write("%s=%s\n" % (KEY_ENV, os.environ[KEY_ENV]))
+        handle.write("ANTHROPIC_BASE_URL=%s\n" % (config.get("anthropic_base_url") or BASE_URL))
     finally:
         handle.close()
     try:
@@ -431,7 +439,11 @@ def run_agent_command(config, prompt):
     so tests (and unusual installs) can point at a different CLI."""
     agent = config.get("agent_bin") or "claude"
     prefix = list(agent) if isinstance(agent, (list, tuple)) else [agent]
-    return prefix + ["-p", prompt, "--dangerously-skip-permissions"]
+    command = prefix + ["-p", prompt, "--dangerously-skip-permissions"]
+    model = str(config.get("agent_model") or "").strip()
+    if model:
+        command += ["--model", model]
+    return command
 
 
 def find_artifact(run_dir, name):
@@ -945,7 +957,7 @@ def main(argv=None):
                     )
 
                 prompt = build_prompt(config, backend)
-                env_file = write_env_file(os.environ[KEY_ENV])
+                env_file = write_env_file(config)
                 try:
                     log("executing tests inside %s" % config["sandbox"])
                     agent_code = backend.exec_agent(

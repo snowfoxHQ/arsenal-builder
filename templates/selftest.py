@@ -368,6 +368,28 @@ def load_summary(run_dir):
         return json.load(fh)
 
 
+def run_endpoint_checks():
+    """The vendor endpoint must be config, not code - and reach the env file."""
+    from runner import DEFAULT_CONFIG, write_env_file
+
+    problems = []
+    if DEFAULT_CONFIG.get("anthropic_base_url") != "https://api.deepseek.com/anthropic":
+        problems.append("default base url drifted from the documented default")
+    os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "selftest-dummy-key")
+    custom = dict(DEFAULT_CONFIG, anthropic_base_url="https://relay.example.com/anthropic")
+    path = write_env_file(custom)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+    finally:
+        os.unlink(path)
+    if "ANTHROPIC_BASE_URL=https://relay.example.com/anthropic" not in content:
+        problems.append("configured base url did not reach the agent env file")
+    if "ANTHROPIC_AUTH_TOKEN=" not in content:
+        problems.append("key missing from the agent env file")
+    return (not problems, "; ".join(problems))
+
+
 def run_lifecycle_checks(base_cfg, cfg_path, state):
     """Resume and profile, end to end.
 
@@ -1307,6 +1329,15 @@ def main():
                 print("    %s" % line)
         else:
             print("%-24s %-8s %-8s %s" % ("resume/profile", "pass", "pass", "ok"))
+
+        ep_ok, ep_detail = run_endpoint_checks()
+        if not ep_ok:
+            failures += 1
+            print("%-24s %-8s %-8s %s" % ("endpoint config", "pass", "fail", "MISMATCH"))
+            for line in ep_detail.split("; "):
+                print("    %s" % line)
+        else:
+            print("%-24s %-8s %-8s %s" % ("endpoint config", "pass", "pass", "ok"))
         print("-" * 72)
         if failures:
             print("%d scenario(s) MISMATCH - the gate is not trustworthy." % failures)
