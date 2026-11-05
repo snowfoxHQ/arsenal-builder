@@ -102,10 +102,6 @@ def validate(result_path, expect_commit=None, expect_run_id=None):
     counts and commit may all look perfect, and it still proves nothing about
     this run.
     """
-    # SABOTAGE CHECK (temporary; reverted in the next commit): prove that CI
-    # turns red when the verdict logic is broken, not just when code crashes.
-    return Verdict(True, [])
-
     if not result_path:
         return Verdict(False, ["no result path configured"])
 
