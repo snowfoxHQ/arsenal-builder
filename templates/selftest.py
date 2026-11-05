@@ -362,13 +362,43 @@ def check_run_dir(run_dir):
         return False, "no run directory was recorded"
     missing = [
         name
-        for name in ("summary.json", "agent.log")
+        for name in ("summary.json", "agent.log", "run_manifest.json")
         if not os.path.isfile(os.path.join(run_dir, name))
     ]
     if missing:
         return False, "run directory is missing " + ", ".join(missing)
     if not os.path.isfile(os.path.join(run_dir, "sandbox", "arsenal-out", "result.json")):
         return False, "result.json was not pulled back under sandbox/arsenal-out/"
+    with open(os.path.join(run_dir, "run_manifest.json"), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    if HOST_HEAD and manifest.get("project_commit") != HOST_HEAD:
+        return False, "manifest project_commit %r != fixture HEAD" % manifest.get("project_commit")
+    return True, ""
+
+
+def check_manifest_comparable(run_dir):
+    """The compare tool must tell 'same environment' from 'different'."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        code_same = runner.main(["--compare", run_dir, run_dir])
+    if code_same != 0:
+        return False, "a run vs itself compared as different (code %d)" % code_same
+
+    tmp = tempfile.mkdtemp(prefix="arsenal-cmp-")
+    try:
+        copy = os.path.join(tmp, "copy")
+        shutil.copytree(run_dir, copy)
+        path = os.path.join(copy, "run_manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["project_commit"] = "0" * 40
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code_diff = runner.main(["--compare", run_dir, copy])
+        if code_diff != 1:
+            return False, "a changed commit still compared comparable (code %d)" % code_diff
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return True, ""
 
 
@@ -826,6 +856,13 @@ SCENARIOS = [
         "expect": 0,
         "why": "a run must leave summary.json, agent.log and the sandbox output behind",
         "check": check_run_dir,
+    },
+    {
+        "name": "manifest comparable",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 0,
+        "why": "every run owes a manifest, and --compare must tell same from different",
+        "check": check_manifest_comparable,
     },
     {
         "name": "sandbox for other repo",

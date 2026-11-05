@@ -77,6 +77,14 @@ EXIT_FAIL = 1
 EXIT_SETUP = 2
 EXIT_BLOCKED = 3
 
+# Kept in step with the root VERSION.txt; run_manifest.json records it so two
+# runs can be told apart by tooling, not by humans reading dates.
+RUNNER_VERSION = "3.2.0"
+
+# Config keys that describe one run rather than the environment it ran in.
+# Excluded from the fingerprint - they differ between runs on purpose.
+VOLATILE_CONFIG_KEYS = ("run_id", "recreate", "home", "config_path")
+
 KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
 BASE_URL = "https://api.deepseek.com/anthropic"
 
@@ -547,6 +555,80 @@ def make_run_dir(out_dir, when=None):
     return run_id, run_dir
 
 
+def build_manifest(config, backend):
+    """The environment facts that decide whether two runs are comparable.
+
+    README says the dependency table is what makes two runs comparable - but a
+    table written by the agent is prose this host never parsed. The manifest is
+    the machine answer: platform, tooling versions, the tested commit, the
+    config fingerprint and the prompt that was sent. Two runs whose manifests
+    differ are two different experiments, whatever their counts claim.
+    """
+    import hashlib
+    import platform
+
+    fingerprint = {
+        key: str(value)
+        for key, value in sorted(config.items())
+        if key not in VOLATILE_CONFIG_KEYS and not isinstance(value, (dict, list))
+    }
+    try:
+        with open(config["prompt_file"], "rb") as handle:
+            prompt_sha = hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        prompt_sha = "unreadable"
+
+    return {
+        "arsenal_version": RUNNER_VERSION,
+        "platform": platform.platform(),
+        "host_python": sys.version.split()[0],
+        "backend": backend.name,
+        "backend_version": backend.version(),
+        "project_commit": _git_head(config.get("project_dir") or ""),
+        "prompt_sha256": prompt_sha,
+        "config_fingerprint": hashlib.sha256(
+            json.dumps(fingerprint, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def manifest_hash(manifest):
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def compare_manifests(dir_a, dir_b):
+    """Print whether two run directories are comparable, and why not.
+
+    Exit 0 = comparable, 1 = differences found, 2 = a manifest is missing or
+    unreadable. The diff is the answer, not prose around it.
+    """
+    manifests = []
+    for run_dir in (dir_a, dir_b):
+        path = os.path.join(run_dir, "run_manifest.json")
+        data = load_json(path)
+        if not isinstance(data, dict):
+            log("no readable run_manifest.json in %s" % run_dir)
+            return EXIT_SETUP
+        manifests.append(data)
+
+    differences = {
+        key: (manifests[0].get(key), manifests[1].get(key))
+        for key in sorted(set(manifests[0]) | set(manifests[1]))
+        if manifests[0].get(key) != manifests[1].get(key)
+    }
+    if differences:
+        print("comparable: false", flush=True)
+        for key, (old, new) in differences.items():
+            print("  %-18s %s -> %s" % (key, old, new), flush=True)
+        return EXIT_FAIL
+    print("comparable: true (%s vs %s)" % (dir_a, dir_b), flush=True)
+    return EXIT_PASS
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Arsenal test pipeline runner")
     parser.add_argument("--config", default="config.json")
@@ -579,7 +661,16 @@ def main(argv=None):
         action="store_true",
         help="treat a thin report as a failure instead of a warning",
     )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("RUN_A", "RUN_B"),
+        help="compare two run directories' manifests; exit 0 comparable / 1 not",
+    )
     args = parser.parse_args(argv)
+
+    if args.compare:
+        return compare_manifests(args.compare[0], args.compare[1])
 
     home = resolve_home(args.root)
 
@@ -677,6 +768,14 @@ def main(argv=None):
     # Preflight already validated the backend; building it again here cannot
     # fail, and both the agent path and artifact recovery go through it.
     backend = get_backend(config)
+
+    # The environment facts of this run, written before anything can fail:
+    # even a crashed run leaves behind what it ran ON, which is what makes two
+    # run directories comparable (or honestly incomparable).
+    manifest = build_manifest(config, backend)
+    with open(os.path.join(run_dir, "run_manifest.json"), "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
 
     try:
         if args.collect:
@@ -864,6 +963,8 @@ def main(argv=None):
         "binding_status": binding_status,
         "binding_verified": binding_status in ("match", "fresh-instance"),
         "backend": config.get("backend") or "sbx",
+        "manifest": manifest,
+        "manifest_hash": manifest_hash(manifest),
         "report_ok": not report_problems,
         "report_depth": config.get("report_depth"),
         "report_problems": report_problems,

@@ -600,3 +600,25 @@ runner 同时新增 `agent_bin`（默认 `claude`）；selftest 夹具改为**�
 
 selftest：28 场景 + sbx/docker/none 三后端契约套件全绿；真机 dry-run
 exit 0。
+
+## v3.2.1 — 2026-11-05
+
+**机器可比性：run_manifest.json + `--compare`。**
+
+README 说「依赖表决定两次运行可比」，但那张表是 agent 写的散文，宿主从未
+解析过。manifest 是机器答案，每次运行在动任何东西之前写出：
+
+- `arsenal_version` / `platform` / `host_python` — 跑在什么上面
+- `backend` + `backend_version()`（sbx/docker 报 CLI 版本，none 报
+  "host (no isolation)"）— 用什么隔离
+- `project_commit` — 宿主 HEAD（宿主自己取，不信 agent）
+- `prompt_sha256` — 发出去的 prompt 指纹
+- `config_fingerprint` — 配置指纹（排除 run_id/recreate/home 等易变键）
+
+`runner.py --compare RUN_A RUN_B`：diff 两个 manifest，exit 0 可比 /
+1 有差异（逐字段列出）/ 2 manifest 缺失。崩溃的运行也留 manifest——
+「跑在什么上面」本身就是证据。summary.json 带上 `manifest` 全文与
+`manifest_hash`。
+
+selftest：29 场景（新增 manifest comparable），审计夹具要求
+run_manifest.json 且 project_commit 与夹具 HEAD 一致。全绿。

@@ -56,6 +56,14 @@ class SandboxBackend:
         """Raise BackendUnavailable when this backend cannot run here."""
         raise NotImplementedError
 
+    def version(self):
+        """The tooling version behind this backend, or None if unknown.
+
+        Feeds run_manifest.json - two runs are only comparable when this is
+        the same, so it is captured, never parsed for behaviour.
+        """
+        return None
+
     # -- instance life cycle -------------------------------------------------
     def exists(self):
         """True when a sandbox instance already exists."""
@@ -177,6 +185,10 @@ class SbxBackend(SandboxBackend):
                 "sbx not on PATH. Install the standalone sbx CLI (MSI) and "
                 "reopen the shell."
             )
+
+    def version(self):
+        result = self._run("--version")
+        return result.stdout.strip().splitlines()[0] if result.returncode == 0 else None
 
     # -- instance life cycle ---------------------------------------------------
     def _listing(self):
@@ -354,6 +366,10 @@ class DockerBackend(SandboxBackend):
                 "has the claude CLI and a git client inside."
             )
 
+    def version(self):
+        result = self._run("--version")
+        return result.stdout.strip().splitlines()[0] if result.returncode == 0 else None
+
     def exists(self):
         result = self._run(
             "ps", "-a", "--filter",
@@ -481,6 +497,9 @@ class NoneBackend(SandboxBackend):
 
     def probe(self):
         return None
+
+    def version(self):
+        return "host (no isolation)"
 
     def exists(self):
         return True
