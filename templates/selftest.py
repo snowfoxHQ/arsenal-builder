@@ -742,8 +742,15 @@ def run_backend_contracts(drivers):
                     "[%s] binding() returned %r" % (backend_name, backend.binding())
                 )
 
-            got = backend.in_sandbox_path("C:\\x\\y")
-            expected_path = "/c/x/y" if backend_name == "sbx" else got
+            # The drive-letter translation exists only because sbx's shell is
+            # MSYS-flavoured; a POSIX host passes POSIX paths straight through
+            # (2026-11-05: feeding C:\x\y on ubuntu produced /cwd/C:/x/y).
+            if os.name == "nt":
+                got = backend.in_sandbox_path("C:\\x\\y")
+                expected_path = "/c/x/y" if backend_name == "sbx" else got
+            else:
+                got = backend.in_sandbox_path("/tmp/x/y")
+                expected_path = got
             if got != expected_path:
                 problems.append("[%s] in_sandbox_path returned %r" % (backend_name, got))
 
