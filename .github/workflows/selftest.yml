@@ -25,11 +25,10 @@ jobs:
         run: python templates/selftest.py
 
   posix:
-    name: selftest (ubuntu, signal only)
+    name: selftest (ubuntu)
     runs-on: ubuntu-latest
-    # Phase 2 (POSIX launcher) needs this signal; until then it must not
-    # gate a release, so it stays non-blocking and visible.
-    continue-on-error: true
+    # Blocking since the path contract went platform-aware: the runner core
+    # and every scenario now pass on Linux as-is.
     env:
       PYTHONUTF8: "1"
     steps:
