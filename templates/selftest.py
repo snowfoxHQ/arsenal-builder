@@ -375,8 +375,11 @@ def load_summary(run_dir):
 
 
 def run_endpoint_checks():
-    """The vendor endpoint must be config, not code - and reach the env file."""
-    from runner import DEFAULT_CONFIG, write_env_file
+    """The vendor endpoint must be config, not code - and reach the env file,
+    review, and the config discovery that glues the launcher chain together."""
+    import tempfile
+
+    from runner import DEFAULT_CONFIG, HOME_ENV, write_env_file
 
     problems = []
     if DEFAULT_CONFIG.get("anthropic_base_url") != "https://api.deepseek.com/anthropic":
@@ -393,6 +396,40 @@ def run_endpoint_checks():
         problems.append("configured base url did not reach the agent env file")
     if "ANTHROPIC_AUTH_TOKEN=" not in content:
         problems.append("key missing from the agent env file")
+
+    # review.py must follow the same configured endpoint: one value, two
+    # consumers. Drift here sends the advisory to the wrong vendor in silence.
+    import review
+
+    cfg_dir = tempfile.mkdtemp(prefix="arsenal-endpoint-")
+    previous_home = os.environ.get(HOME_ENV)
+    previous_cwd = os.getcwd()
+    try:
+        cfg_path = os.path.join(cfg_dir, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump({"anthropic_base_url": "https://relay.example.com/anthropic",
+                       "review_model": "relay-mini"}, fh)
+        endpoint, model = review._load_overrides(cfg_path)
+        if endpoint != "https://relay.example.com/anthropic/v1/messages":
+            problems.append("review did not follow the configured endpoint: %s" % endpoint)
+        if model != "relay-mini":
+            problems.append("review_model override did not reach review: %s" % model)
+
+        # A bare config.json must resolve through ARSENAL_HOME, never fall
+        # back to the default vendor in silence (the launcher-chain drift).
+        os.chdir(cfg_dir)
+        os.environ[HOME_ENV] = cfg_dir
+        resolved = review.resolve_config_path("config.json")
+        endpoint2, _model2 = review._load_overrides(resolved)
+        if "relay.example.com" not in endpoint2:
+            problems.append("bare config.json did not resolve to the home wiring")
+    finally:
+        os.chdir(previous_cwd)
+        if previous_home is None:
+            os.environ.pop(HOME_ENV, None)
+        else:
+            os.environ[HOME_ENV] = previous_home
+        shutil.rmtree(cfg_dir, ignore_errors=True)
     return (not problems, "; ".join(problems))
 
 

@@ -56,7 +56,7 @@ echo [2/2] advisory review (does not affect the verdict)...
 set "RUNDIR="
 if exist "%AHOME%\last-run.txt" set /p RUNDIR=<"%AHOME%\last-run.txt"
 if defined RUNDIR (
-    python "%PYDIR%\review.py" "%RUNDIR%"
+    python "%PYDIR%\review.py" "%RUNDIR%" --config "%CONFIG%"
 ) else (
     echo review skipped: no run directory recorded
 )

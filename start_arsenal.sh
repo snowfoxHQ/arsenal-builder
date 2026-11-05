@@ -57,7 +57,7 @@ case "$RC" in
         echo "[2/2] advisory review (does not affect the verdict)..."
         if [ -f "$AHOME/last-run.txt" ]; then
             RUNDIR="$(head -n 1 "$AHOME/last-run.txt")"
-            "$PY" "$PYDIR/review.py" "$RUNDIR"
+            "$PY" "$PYDIR/review.py" "$RUNDIR" --config "$CONFIG"
         else
             echo "review skipped: no run directory recorded"
         fi

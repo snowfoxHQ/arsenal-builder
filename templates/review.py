@@ -19,13 +19,27 @@ import urllib.error
 import urllib.request
 
 from arsenal_contract import load_json, validate
-from runner import BASE_URL, find_artifact
+from runner import BASE_URL, HOME_ENV, find_artifact
 
 # The endpoint is derived from the configured base URL - one value, two
 # consumers (runner writes it into the agent env, review builds its own
 # URL). Duplicating the vendor string here is how drift starts.
 KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
 MODEL = "deepseek-flash"  # default; config "review_model" overrides
+
+
+def resolve_config_path(config_arg):
+    """A bare `config.json` must find the home's wiring, not fall back to the
+    default vendor in silence - that silent fallback IS endpoint drift
+    (2026-11-05: the launcher never passed --config, so a configured custom
+    endpoint reached the agent but review quietly kept the default one)."""
+    if config_arg and not os.path.isfile(config_arg):
+        home = os.environ.get(HOME_ENV)
+        if home:
+            candidate = os.path.join(home, config_arg)
+            if os.path.isfile(candidate):
+                return candidate
+    return config_arg
 
 
 def _load_overrides(config_path):
@@ -58,7 +72,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    endpoint, model = _load_overrides(args.config)
+    endpoint, model = _load_overrides(resolve_config_path(args.config))
 
     # The artifacts live under sandbox/arsenal-out/ after the directory copy,
     # so resolve them instead of assuming they sit at the run root.
