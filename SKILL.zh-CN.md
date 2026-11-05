@@ -343,8 +343,11 @@ sbx 沙箱测试。
 npx -y @alipay/agent-payment@latest install
 ```
 
-**调用流程**（`../../payments/scripts/arsenal-paid.mjs` 三个本地子命令，
-支付侧整体位于仓库根的 `payments/`，不在 Skill 包内）：
+> 注：支付侧（付费客户端、验付服务、支付宝官方 skill 资料）是**本地实验，
+> 已移出本仓库**（位于仓库外 `..\ai-arsenal-payments\`）。以下流程描述保留
+> 作设计记录；runner 中没有门禁调用，本节不影响平台任何运行路径。
+>
+**调用流程**（付费客户端三个本地子命令）：
 
 ```
 probe    → 请求资源接口；未付款时预期 HTTP 402 + `Payment-Needed` 响应头，

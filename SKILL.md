@@ -364,9 +364,12 @@ sbx 沙箱测试.
 npx -y @alipay/agent-payment@latest install
 ```
 
-**Call flow** (`../../payments/scripts/arsenal-paid.mjs`, three local
-subcommands; the payment side lives in `payments/` at the repo root, outside
-the Skill package):
+> Note: the payment side (paid client, verify service, official Alipay skill
+> material) is a **local experiment kept outside this repository**
+> (`..\ai-arsenal-payments\`). The flow below is kept as a design record;
+> the runner contains no gate call and this section affects no run path.
+>
+**Call flow** (three local subcommands of the paid client):
 
 ```
 probe    → GET/POST the resource URL; expect HTTP 402 + `Payment-Needed`
