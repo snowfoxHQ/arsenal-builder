@@ -766,3 +766,32 @@ basic 忽略日志），三套件全绿。config.example.json 补齐全部新键
 - 旧 dist zip 由手写文件清单生成，悄悄漏过文件（连 `.gitignore` 都没有）；
   现在树就是清单，排除项显式声明。
 - 工作台 `dist\` 的存量 zip 降级为历史存档，新版本只走 Releases。
+
+## v3.5.0 — 2026-11-05
+
+**跨平台补课收官。** 三件事，每件都带着一个出生事故。
+
+### POSIX（2.1）
+- ubuntu CI 转绿并升为阻断：runner 核心本来就是跨平台的，坏的是
+  测试夹具里的 Windows 假设（`C:\x\y` 喂给 POSIX 的 `in_sandbox_path`）。
+  路径契约平台化后，40 场景 + 四套件在 Linux 全绿。
+- `start_arsenal.sh`（包内）+ `arsenal.sh` / `install.sh`（工作台）：
+  退出码语义、横幅、dry-run 短路、install 链（缺包自动克隆）与
+  Windows 版逐行对齐，git-bash 实测。
+- 教训：`git update-index --chmod=+x` 对未跟踪文件无效——先 add 再改位。
+
+### pytest 取证（2.2）
+- **真 bug**：pytest 重定向到文件时末行无 `====` 横幅，解析返回 None——
+  pytest 分支此前连自检场景都没有。修复：横幅可选 + errors 计入 failed；
+  自检 +3 场景。
+- 演示靶：`tests_pytest/` 21 个 pytest 原生用例 + vendor wheels 离线安装
+  （沙箱网络策略挡 pypi，离线 wheel 是唯一路径）。真机 PASS(0)，
+  total=59 = 19 unittest + 40 pytest；regression 分支 pytest 红 2 个
+  （正中 off-by-one）。
+- PROMPT 强制 `test-<framework>.log` 命名（此前 `unittest.log` 被
+  取证过滤器全盲）。
+
+### review 端点漂移（2.3）
+- **真漂移**：启动器从不给 review 传 `--config`，review 静默退回默认
+  供应商——配置的自定义端点到达 agent 却到不了点评。修复：裸
+  `config.json` 经 `ARSENAL_HOME` 解析 + 启动器显式传参 + 自检两场景。
