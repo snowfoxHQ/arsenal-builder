@@ -25,6 +25,10 @@ sys.path.insert(0, HERE)
 import runner  # noqa: E402
 from arsenal_contract import validate  # noqa: E402
 
+# Populated in main(): paths of the per-backend fake CLIs and their states.
+DOCKER = {}
+NONE = {}
+
 FAKE_SBX = r'''
 import json, os, shutil, sys
 
@@ -116,6 +120,111 @@ print("fake sbx: unsupported command " + cmd)
 sys.exit(1)
 '''
 
+FAKE_DOCKER = r'''
+import json, os, shutil, sys
+
+state = os.environ["FAKE_DOCKER_STATE"]
+args = sys.argv[1:]
+cmd = args[0] if args else ""
+
+def read(name, default=""):
+    path = os.path.join(state, name)
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+if cmd == "info":
+    print("Docker is fine")
+    sys.exit(0)
+
+if cmd == "ps":
+    print("test-sandbox" if os.path.exists(os.path.join(state, "exists")) else "", end="")
+    sys.exit(0)
+
+if cmd == "inspect":
+    print(read("workspace").strip())
+    sys.exit(0)
+
+if cmd == "run":
+    open(os.path.join(state, "exists"), "w").close()
+    for i, a in enumerate(args):
+        if a.startswith("arsenal.project="):
+            with open(os.path.join(state, "workspace"), "w", encoding="utf-8") as fh:
+                fh.write(a.split("=", 1)[1])
+    print("container id")
+    sys.exit(0)
+
+if cmd == "rm":
+    try:
+        os.unlink(os.path.join(state, "exists"))
+    except OSError:
+        pass
+    sys.exit(0)
+
+if cmd == "exec":
+    blob = os.path.join(state, "exec.bin")
+    if os.path.exists(blob):
+        with open(blob, "rb") as fh:
+            sys.stdout.buffer.write(fh.read())
+        sys.stdout.buffer.flush()
+    sys.exit(int(read("exec.rc", "0").strip() or "0"))
+
+if cmd == "cp":
+    src, dst = args[1], args[2]
+    base = src.replace("\\", "/").rstrip("/").split("/")[-1]
+    files = os.path.join(state, "files")
+    if base == "arsenal-out" and os.path.isdir(dst):
+        shutil.copytree(files, os.path.join(dst, "arsenal-out"), dirs_exist_ok=True)
+        sys.exit(0)
+    path = os.path.join(files, base)
+    if os.path.exists(path):
+        shutil.copyfile(path, dst)
+        sys.exit(0)
+    print("cp: no such file: " + src)
+    sys.exit(1)
+
+print("fake docker: unsupported command " + cmd)
+sys.exit(1)
+'''
+
+# A stand-in for the claude CLI: parses the rendered prompt, writes a
+# contract-valid result.json and a report that passes the shape audit.
+FAKE_AGENT = r'''
+import json, os, re, sys
+
+args = sys.argv[1:]
+prompt = args[args.index("-p") + 1] if "-p" in args else ""
+
+run_id = ""
+m = re.search(r'"run_id":\s*"([^"]+)"', prompt)
+if m:
+    run_id = m.group(1)
+result_path = ""
+m = re.search(r"`([^`\n]*result\.json)`", prompt)
+if m:
+    result_path = m.group(1)
+report_path = result_path.replace("result.json", "report.md") if result_path else ""
+
+os.makedirs(os.path.dirname(result_path), exist_ok=True)
+with open(result_path, "w", encoding="utf-8") as fh:
+    fh.write(json.dumps({
+        "project": "fixture",
+        "run_id": run_id,
+        "commit": "7f3a2c9",
+        "started_at": "2026-01-01T09:00:00+08:00",
+        "finished_at": "2026-01-01T09:01:00+08:00",
+        "total": 10, "passed": 10, "failed": 0, "skipped": 0,
+        "blocked": [],
+    }, indent=2))
+rows = "\n".join("| k%d | v%d |" % (i, i) for i in range(14))
+bullets = "\n".join("- covered behaviour %d" % i for i in range(16))
+with open(report_path, "w", encoding="utf-8") as fh:
+    fh.write("# report\n\n## 1. Section\n\nsome prose. " * 40 + "\n\n" + rows + "\n" + bullets + "\n")
+print("fake agent done")
+sys.exit(0)
+'''
+
 
 def make_result(**overrides):
     data = {
@@ -133,6 +242,38 @@ def make_result(**overrides):
     return data
 
 
+HOST_HEAD = ""
+
+
+def _init_fixture_repo(project):
+    """A real commit, so binding self-certification has two HEADs to compare."""
+    global HOST_HEAD
+    try:
+        subprocess.run(
+            ["git", "init", "-q"], cwd=project, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        subprocess.run(
+            ["git", "-C", project, "config", "user.email", "selftest@arsenal"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        subprocess.run(
+            ["git", "-C", project, "config", "user.name", "selftest"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        subprocess.run(
+            ["git", "-C", project, "commit", "-q", "--allow-empty", "-m", "fixture"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        result = subprocess.run(
+            ["git", "-C", project, "rev-parse", "HEAD"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        HOST_HEAD = result.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        HOST_HEAD = ""
+
+
 def build_workspace(root):
     fake = os.path.join(root, "fake_sbx.py")
     with open(fake, "w", encoding="utf-8") as handle:
@@ -144,6 +285,7 @@ def build_workspace(root):
 
     project = os.path.join(root, "project")
     os.makedirs(os.path.join(project, ".git"), exist_ok=True)
+    _init_fixture_repo(project)
 
     # Fixture for the preflight scenario below: a directory that is not a repo.
     os.makedirs(os.path.join(root, "notrepo"), exist_ok=True)
@@ -392,13 +534,13 @@ def check_prompt_rendered(_run_dir=None):
     return True, ""
 
 
-def run_backend_contracts(fake_cli):
+def run_backend_contracts(drivers):
     """Every backend must satisfy the same capability contract.
 
-    The checks are written against the contract, not against sbx: when a new
-    backend and its fake driver land (docker, none), they join the loop below
-    and must pass unchanged. This is what keeps "sandbox-agnostic" from
-    decaying into docs-only.
+    `drivers` maps backend name -> (bin override key, bin path, state env var).
+    The checks are written against the contract, not against any vendor: a new
+    backend joins by adding a fake CLI driver here and must pass unchanged.
+    This is what keeps "sandbox-agnostic" from decaying into docs-only.
     """
     from backends import BackendError, get_backend
 
@@ -409,9 +551,7 @@ def run_backend_contracts(fake_cli):
     except BackendError:
         pass
 
-    # Extend this list together with backends/__init__.py: each entry needs a
-    # fake CLI driver that speaks the backend's command syntax.
-    for backend_name, state_env in (("sbx", "FAKE_SBX_STATE"),):
+    for backend_name, (bin_key, fake_cli, state_env) in drivers.items():
         root = tempfile.mkdtemp(prefix="arsenal-backend-%s-" % backend_name)
         previous = os.environ.get(state_env)
         try:
@@ -424,7 +564,8 @@ def run_backend_contracts(fake_cli):
                 "project_dir": os.path.join(root, "proj"),
                 "workspace_mode": "clone",
                 "sandbox_out_dir": "/tmp/arsenal-out",
-                "sbx_bin": [sys.executable, fake_cli],
+                bin_key: [sys.executable, fake_cli],
+                "docker_image": "test/agent-image",
             }
             backend = get_backend(cfg)
 
@@ -434,7 +575,7 @@ def run_backend_contracts(fake_cli):
                 problems.append("[%s] probe rejected a present binary: %s" % (backend_name, exc))
 
             missing = get_backend(
-                dict(cfg, sbx_bin=os.path.join(root, "no-such-backend.exe"))
+                dict(cfg, **{bin_key: os.path.join(root, "no-such-backend.exe")})
             )
             try:
                 missing.probe()
@@ -455,7 +596,8 @@ def run_backend_contracts(fake_cli):
                 )
 
             got = backend.in_sandbox_path("C:\\x\\y")
-            if got != "/c/x/y":
+            expected_path = "/c/x/y" if backend_name == "sbx" else got
+            if got != expected_path:
                 problems.append("[%s] in_sandbox_path returned %r" % (backend_name, got))
 
             if backend.fetch_file(
@@ -470,6 +612,39 @@ def run_backend_contracts(fake_cli):
             else:
                 os.environ[state_env] = previous
             shutil.rmtree(root, ignore_errors=True)
+
+    # The none backend has no CLI to fake - drive it directly against the
+    # real file system.
+    root = tempfile.mkdtemp(prefix="arsenal-backend-none-")
+    try:
+        project = os.path.join(root, "proj")
+        os.makedirs(project)
+        cfg = {
+            "backend": "none",
+            "sandbox": "none",
+            "project_dir": project,
+            "workspace_mode": "bind",
+        }
+        none_backend = get_backend(cfg)
+        if none_backend.isolation:
+            problems.append("[none] claims isolation")
+        if os.path.normcase(none_backend.binding()) != os.path.normcase(project):
+            problems.append("[none] binding() is not the project dir")
+        if os.path.normcase(none_backend.in_sandbox_path(project)) != os.path.normcase(
+            os.path.abspath(project)
+        ):
+            problems.append("[none] in_sandbox_path is not identity")
+        out = os.path.join(root, "artifacts")
+        os.makedirs(out)
+        with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        if not none_backend.fetch_file(out, "result.json", os.path.join(root, "r.json")):
+            problems.append("[none] fetch_file failed on a real file")
+        none_backend.clear_dir(out)
+        if os.path.exists(out):
+            problems.append("[none] clear_dir left the directory behind")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
     return (not problems, "; ".join(problems))
 
@@ -800,7 +975,68 @@ SCENARIOS = [
             os.path.dirname(cfg["out_dir"]), "notrepo"
         ),
     },
+    {
+        "name": "self-cert: commit mismatch",
+        "setup": lambda s: stage(
+            s, make_result(), 0, b"0" * 40 + b"\n"
+        ),
+        "expect": lambda: 2 if HOST_HEAD else 0,
+        "why": "no metadata, and the instance's HEAD differs from the host's - "
+        "a different tree",
+    },
+    {
+        "name": "self-cert: commit match",
+        "setup": lambda s: stage(
+            s, make_result(), 0, (HOST_HEAD + "\n").encode()
+        ),
+        "expect": 0,
+        "why": "no metadata, but the HEADs agree - the instance holds this tree",
+    },
+    {
+        "name": "docker binding mismatch",
+        "setup": lambda s: _stage_docker(DOCKER["state"], workspace="C:/somewhere/else"),
+        "expect": 2,
+        "why": "a container labelled for another project must not test this one",
+        "config": {
+            "backend": "docker",
+            "docker_bin": lambda cfg: [sys.executable, DOCKER["fake"]],
+            "docker_image": "test/agent-image",
+            "workspace_mode": "bind",
+            "i_accept_bind_mount_risk": True,
+        },
+    },
+    {
+        "name": "none backend refused",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 2,
+        "why": "no isolation is a trust-model change - it demands explicit acceptance",
+        "config": {"backend": "none"},
+    },
+    {
+        "name": "none backend accepted",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 0,
+        "why": "with explicit acceptance, the run proceeds on the host itself",
+        "config": {
+            "backend": "none",
+            "i_accept_no_isolation": True,
+            "workspace_mode": "bind",
+            "agent_bin": lambda cfg: [sys.executable, NONE["fake_agent"]],
+        },
+    },
 ]
+
+
+def _stage_docker(state, workspace=None, exec_rc=0, exec_output=b""):
+    if not os.path.exists(os.path.join(state, "exists")):
+        open(os.path.join(state, "exists"), "w").close()
+    if workspace is not None:
+        with open(os.path.join(state, "workspace"), "w", encoding="utf-8") as fh:
+            fh.write(workspace)
+    with open(os.path.join(state, "exec.rc"), "w", encoding="utf-8") as fh:
+        fh.write(str(exec_rc))
+    with open(os.path.join(state, "exec.bin"), "wb") as fh:
+        fh.write(exec_output)
 
 
 def main():
@@ -817,37 +1053,50 @@ def main():
     try:
         cfg, cfg_path, state = build_workspace(root)
         default_project = cfg["project_dir"]
+        base_cfg = dict(cfg)
+
+        with open(os.path.join(root, "fake_docker.py"), "w", encoding="utf-8") as fh:
+            fh.write(FAKE_DOCKER)
+        DOCKER["fake"] = os.path.join(root, "fake_docker.py")
+        DOCKER["state"] = os.path.join(root, "docker-state")
+        os.makedirs(os.path.join(DOCKER["state"], "files"), exist_ok=True)
+        os.environ["FAKE_DOCKER_STATE"] = DOCKER["state"]
+
+        with open(os.path.join(root, "fake_agent.py"), "w", encoding="utf-8") as fh:
+            fh.write(FAKE_AGENT)
+        NONE["fake_agent"] = os.path.join(root, "fake_agent.py")
+
         print("arsenal self-test")
         print("workspace: %s" % root)
         print("")
-        print("%-22s %-8s %-8s %s" % ("scenario", "expect", "actual", "result"))
+        print("%-24s %-8s %-8s %s" % ("scenario", "expect", "actual", "result"))
         print("-" * 72)
 
         for scenario in SCENARIOS:
             reset_state(state)
             scenario["setup"](state)
 
-            if "expect_commit" in scenario:
-                cfg["expect_commit"] = scenario["expect_commit"]
-            else:
-                cfg["expect_commit"] = None
-
+            cfg = dict(base_cfg)
+            cfg["expect_commit"] = scenario.get("expect_commit")
             override = scenario.get("project_dir")
             cfg["project_dir"] = override(cfg) if callable(override) else default_project
+            for key, value in (scenario.get("config") or {}).items():
+                cfg[key] = value(cfg) if callable(value) else value
 
             with open(cfg_path, "w", encoding="utf-8") as handle:
                 json.dump(cfg, handle, indent=2)
 
             code, output, run_dir = run_runner(cfg_path)
-            ok = code == scenario["expect"]
+            expect = scenario["expect"]() if callable(scenario["expect"]) else scenario["expect"]
+            ok = code == expect
             detail = ""
             if ok and scenario.get("check"):
                 ok, detail = scenario["check"](run_dir)
             if not ok:
                 failures += 1
             print(
-                "%-22s %-8d %-8s %s"
-                % (scenario["name"], scenario["expect"], code, "ok" if ok else "MISMATCH")
+                "%-24s %-8s %-8s %s"
+                % (scenario["name"], expect, code, "ok" if ok else "MISMATCH")
             )
             if not ok:
                 if detail:
@@ -858,7 +1107,10 @@ def main():
 
         print("-" * 72)
         contract_ok, contract_detail = run_backend_contracts(
-            os.path.join(root, "fake_sbx.py")
+            {
+                "sbx": ("sbx_bin", os.path.join(root, "fake_sbx.py"), "FAKE_SBX_STATE"),
+                "docker": ("docker_bin", DOCKER["fake"], "FAKE_DOCKER_STATE"),
+            }
         )
         if not contract_ok:
             failures += 1

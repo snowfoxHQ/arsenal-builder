@@ -19,6 +19,7 @@ Exit codes are the only signal that matters downstream. Prose is not parsed.
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -31,6 +32,7 @@ DEFAULT_CONFIG = {
     # implementation (see backends/); the runner itself only knows the
     # five-capability contract, never a vendor name.
     "backend": "sbx",
+    "agent_bin": "claude",
     "sandbox": "test-sandbox",
     # Deliberately empty: there is no sensible default for "the project to test".
     # preflight() refuses to run until this is set to a real git repository root.
@@ -175,10 +177,17 @@ def preflight(config):
     mode = str(config["workspace_mode"]).lower()
     if mode not in ("clone", "bind"):
         problems.append("workspace_mode must be 'clone' or 'bind', got %r" % mode)
-    if mode == "bind" and not config.get("i_accept_bind_mount_risk"):
+    if backend.isolation and mode == "bind" and not config.get("i_accept_bind_mount_risk"):
         problems.append(
             "workspace_mode=bind exposes the host directory read-write to the agent. "
             "Set \"i_accept_bind_mount_risk\": true in the config to confirm."
+        )
+    if not backend.isolation and not config.get("i_accept_no_isolation"):
+        problems.append(
+            'backend "%s" runs the agent directly on this machine - no sandbox, no '
+            "isolation: the agent can do anything this user can. Set "
+            '"i_accept_no_isolation": true in the config to accept that explicitly.'
+            % backend.name
         )
 
     project_dir = config.get("project_dir")
@@ -189,7 +198,11 @@ def preflight(config):
         )
     elif not os.path.isdir(project_dir):
         problems.append("project_dir does not exist: %s" % project_dir)
-    elif mode == "clone" and not os.path.exists(os.path.join(project_dir, ".git")):
+    elif (
+        backend.isolation
+        and mode == "clone"
+        and not os.path.exists(os.path.join(project_dir, ".git"))
+    ):
         problems.append(
             "workspace_mode=clone needs a git repository, but %s has no .git. "
             "Set workspace_mode to bind (and accept the read-write mount), or make "
@@ -203,25 +216,24 @@ def preflight(config):
     # cloned from a different project would test the wrong tree - and every
     # number in the report would be real, just not about this project. Check it
     # here, which means --dry-run catches it too, instead of finding out from a
-    # report nobody questions.
-    if mode == "clone" and project_dir and backend.exists():
+    # report nobody questions. When the backend cannot report a binding, the
+    # check self-certifies (commit comparison for clone, nonce file for bind).
+    if backend.isolation and project_dir and backend.exists():
         try:
-            attached = backend.binding()
-        except BackendError:
-            attached = None
-        if attached is None:
-            # Cannot tell which tree it is bound to. Not fatal - an unreadable
-            # listing is usually a sleeping Docker daemon - but say so, because
-            # silence here reads as "checked and fine".
-            log(
-                "warning: could not read which directory sandbox %r is bound to"
-                % config["sandbox"]
-            )
-        elif not same_path(attached, project_dir):
+            status, detail = check_binding(backend, config)
+        except BackendError as exc:
+            status, detail = "unknown", str(exc)
+        if status == "mismatch":
             problems.append(
-                "sandbox %r is bound to %s, but project_dir is %s. A sandbox tests "
-                "one directory for life - run with --recreate to rebuild it."
-                % (config["sandbox"], attached, project_dir)
+                "sandbox %r belongs to a different tree (binding check got %r, "
+                "expected project_dir %s). A sandbox tests one directory for "
+                "life - run with --recreate to rebuild it."
+                % (config["sandbox"], detail, project_dir)
+            )
+        elif status == "unknown":
+            log(
+                "warning: could not verify which directory sandbox %r is bound to "
+                "(no metadata, self-check inconclusive)" % config["sandbox"]
             )
 
     return problems
@@ -233,6 +245,95 @@ def same_path(left, right):
     return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
         os.path.normpath(right)
     )
+
+
+def _git_head(project):
+    try:
+        result = subprocess.run(
+            ["git", "-C", project, "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def binding_by_commit(backend, project):
+    """Self-certify a clone-style instance when it reports no binding.
+
+    Metadata is not the only evidence: if the instance were cloned from this
+    project, its HEAD and the host's HEAD agree. Two different hashes mean the
+    instance holds a different tree - which is the wrong-tree accident this
+    whole check exists to prevent.
+    """
+    from arsenal_contract import same_commit
+
+    host_head = _git_head(project)
+    if not host_head:
+        return "unknown", None
+    rc, out = backend.exec_capture(
+        ["git", "-C", backend.in_sandbox_path(project), "rev-parse", "HEAD"]
+    )
+    sandbox_head = (out or "").strip() if rc == 0 else ""
+    if not sandbox_head or " " in sandbox_head or len(sandbox_head) > 100:
+        return "unknown", None
+    if same_commit(host_head, sandbox_head):
+        return "match", host_head
+    return "mismatch", sandbox_head
+
+
+def binding_by_nonce(backend, project):
+    """Self-certify a bind-style instance with a one-off file.
+
+    Drop a nonce into the project and ask the instance to read it back. This
+    verifies the file system the instance actually sees, not what it claims -
+    a stronger check than any metadata, and it works on every backend that can
+    execute a command.
+    """
+    nonce = "arsenal-nonce-%d-%s" % (os.getpid(), time.strftime("%H%M%S"))
+    marker = os.path.join(project, ".arsenal-nonce")
+    try:
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write(nonce)
+    except OSError:
+        return "unknown", None
+    try:
+        rc, out = backend.exec_capture(["cat", backend.in_sandbox_path(marker)])
+    finally:
+        try:
+            os.unlink(marker)
+        except OSError:
+            pass
+    if rc != 0:
+        return "unknown", None
+    got = (out or "").strip()
+    if got == nonce:
+        return "match", nonce
+    return "mismatch", got
+
+
+def check_binding(backend, config):
+    """(status, detail) with status in 'match' | 'mismatch' | 'unknown'.
+
+    Metadata first (the backend's own binding report); when a backend cannot
+    report one, fall back to self-certification: commit comparison for clone
+    mode, nonce file for bind mode. 'unknown' never blocks a run - it warns,
+    because silence would read as "checked and fine".
+    """
+    project = config.get("project_dir")
+    attached = backend.binding()
+    if attached:
+        if same_path(attached, project):
+            return "match", attached
+        return "mismatch", attached
+    mode = str(config["workspace_mode"]).lower()
+    if mode == "clone":
+        return binding_by_commit(backend, project)
+    return binding_by_nonce(backend, project)
 
 
 def write_env_file(api_key):
@@ -256,8 +357,19 @@ def build_prompt(config, backend):
     with open(config["prompt_file"], "r", encoding="utf-8") as handle:
         template = handle.read()
 
+    if not getattr(backend, "isolation", True):
+        # The prompt's first line claims an isolated sandbox. On a backend with
+        # no isolation that claim is false, and an agent that believes it might
+        # roam. Say so, before the hard rules.
+        template += (
+            "\n\n## Isolation notice\n\n"
+            "This run has **no sandbox isolation**: you are on the operator's "
+            "machine. The hard rules above apply doubly - do not read, write or "
+            "inspect anything outside `{{PROJECT_PATH}}` and `{{OUT_DIR}}`.\n"
+        )
+
     project_in_sandbox = backend.in_sandbox_path(config["project_dir"])
-    out_dir = config["sandbox_out_dir"].rstrip("/")
+    out_dir = backend.artifact_dir
 
     return (
         template.replace("{{PROJECT_PATH}}", project_in_sandbox)
@@ -278,10 +390,13 @@ def depth_text(depth):
     return REPORT_DEPTH_TEXT.get(str(depth or "").strip().lower(), REPORT_DEPTH_TEXT["full"])
 
 
-def run_agent_command(prompt):
+def run_agent_command(config, prompt):
     """The agent invocation, identical for every backend: the policy lives
-    here, the mechanics of executing it live in the backend."""
-    return ["claude", "-p", prompt, "--dangerously-skip-permissions"]
+    here, the mechanics of executing it live in the backend. agent_bin exists
+    so tests (and unusual installs) can point at a different CLI."""
+    agent = config.get("agent_bin") or "claude"
+    prefix = list(agent) if isinstance(agent, (list, tuple)) else [agent]
+    return prefix + ["-p", prompt, "--dangerously-skip-permissions"]
 
 
 def find_artifact(run_dir, name):
@@ -303,7 +418,7 @@ def fetch_outputs(config, run_dir, backend):
     dumps - comes home automatically, and nothing is silently dropped because
     the host was not told its name in advance.
     """
-    out_dir = config["sandbox_out_dir"].rstrip("/")
+    out_dir = backend.artifact_dir
     local_dir = os.path.join(run_dir, "sandbox")
     os.makedirs(local_dir, exist_ok=True)
 
@@ -553,6 +668,7 @@ def main(argv=None):
     error = None
     verdict = None
     got_result = got_report = False
+    binding_status = "unchecked"
 
     # Everything from here on can fail halfway - a dropped console, a killed
     # process, a sandbox that never starts. The run directory must still end up
@@ -572,11 +688,11 @@ def main(argv=None):
                     "--collect needs an existing sandbox named %r" % config["sandbox"]
                 )
             log("collect mode: pulling existing output from %s" % config["sandbox"])
-            attached = backend.binding()
-            if attached and not same_path(attached, config["project_dir"]):
+            binding_status, detail = check_binding(backend, config)
+            if binding_status == "mismatch":
                 log(
-                    "warning: this sandbox is attached to %s, not to project_dir %s"
-                    % (attached, config["project_dir"])
+                    "warning: this sandbox does not belong to project_dir %s "
+                    "(binding check got %r)" % (config["project_dir"], detail)
                 )
         else:
             if config.get("recreate") and backend.exists():
@@ -589,24 +705,30 @@ def main(argv=None):
                 )
                 if not backend.create():
                     raise RuntimeError("sandbox create failed - see the output above")
+                binding_status = "fresh-instance"
             else:
                 log("reusing existing sandbox %s" % config["sandbox"])
                 # A sandbox is bound to one host directory for its whole life.
                 # Reusing one that was cloned from a different project silently
                 # tests the wrong tree - which is exactly how a run once reported
                 # on sandbox-workspaces/vecRecall instead of the project asked for.
-                attached = backend.binding()
-                if attached and not same_path(attached, config["project_dir"]):
+                binding_status, detail = check_binding(backend, config)
+                if binding_status == "mismatch":
                     raise RuntimeError(
-                        "sandbox %r is attached to %s, but project_dir is %s - "
-                        "rerun with --recreate to rebuild it"
-                        % (config["sandbox"], attached, config["project_dir"])
+                        "sandbox %r belongs to a different tree (binding check got "
+                        "%r), not project_dir %s - rerun with --recreate to rebuild it"
+                        % (config["sandbox"], detail, config["project_dir"])
+                    )
+                if binding_status == "unknown":
+                    log(
+                        "warning: could not verify the sandbox binding - continuing, "
+                        "the run_id nonce still guarantees freshness"
                     )
 
             # Cheap half of the freshness guarantee: no leftover output can be
             # fetched back if the folder is empty before the agent starts. The
             # strong half is the run_id nonce, checked by the gate below.
-            out_dir = config["sandbox_out_dir"].rstrip("/")
+            out_dir = backend.artifact_dir
             if not backend.clear_dir(out_dir):
                 log(
                     "warning: could not clear %s inside the sandbox; the run_id "
@@ -618,7 +740,7 @@ def main(argv=None):
             try:
                 log("executing tests inside %s" % config["sandbox"])
                 agent_code = backend.exec_agent(
-                    run_agent_command(prompt), env_file, agent_log
+                    run_agent_command(config, prompt), env_file, agent_log
                 )
             finally:
                 try:
@@ -739,6 +861,9 @@ def main(argv=None):
         "run_id_verified": bool(
             not args.collect and verdict.data and verdict.data.get("run_id") == run_id
         ),
+        "binding_status": binding_status,
+        "binding_verified": binding_status in ("match", "fresh-instance"),
+        "backend": config.get("backend") or "sbx",
         "report_ok": not report_problems,
         "report_depth": config.get("report_depth"),
         "report_problems": report_problems,

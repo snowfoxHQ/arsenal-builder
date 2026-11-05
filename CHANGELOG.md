@@ -570,3 +570,33 @@ BLOCKED(exit 3)，`run_id_verified: true`。
 
 实测：selftest 23 场景 + 后端契约全绿；真机 dry-run exit 0、全流水线
 BLOCKED(exit 3)，执行/清场/回收路径全部走新后端。
+
+## v3.2.0 — 2026-11-05
+
+**任何沙箱都能跑：docker / none 后端落地 + 绑定自证 + 无隔离红线。**
+
+新后端：
+
+- **docker**：普通 Docker 容器，bind 挂载项目（读写），binding 记在容器
+  label（`arsenal.project`），经 `docker inspect` 结构化读回。clone 模式不
+  支持（无远端可克隆），必须 `i_accept_bind_mount_risk: true`；`docker_image`
+  必填（probe 阶段就拦截，含 claude CLI 的镜像）。
+- **none**：无隔离，agent 直接跑在宿主机项目目录。合法后端（快速迭代/无沙箱
+  CI），但**改写信任模型**——preflight 强制 `i_accept_no_isolation: true`，
+  否则退出码 2；prompt 追加 Isolation notice（原文声称"isolated sandbox"
+  在此模式下是谎言）。产物目录固定在系统临时目录，`agent_bin` 可换 CLI
+  （selftest 用它注入假 agent，不真调 claude）。
+
+绑定自证（binding() 返回 unknown 时不再只是告警）：
+
+- **clone 模式 → commit 比对**：沙箱内 `git rev-parse HEAD` 与宿主 HEAD
+  经 `same_commit`（缩写容错）比对，不一致 → 退出码 2；
+- **bind 模式 → nonce 文件**：往 project_dir 放一次性 nonce，让实例读回，
+  内容不符 → 退出码 2；读不到 → 保持 unknown 告警。
+- summary.json 新增 `binding_status` / `binding_verified` / `backend`。
+
+runner 同时新增 `agent_bin`（默认 `claude`）；selftest 夹具改为**真 git
+仓库**（自证需要两个可比较的 HEAD），新增假 docker CLI、假 agent。
+
+selftest：28 场景 + sbx/docker/none 三后端契约套件全绿；真机 dry-run
+exit 0。

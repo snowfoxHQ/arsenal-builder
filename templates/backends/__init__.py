@@ -39,8 +39,17 @@ class SandboxBackend:
 
     name = "abstract"
 
+    # False means the agent runs directly on this machine - the runner then
+    # demands explicit "i_accept_no_isolation" confirmation in preflight.
+    isolation = True
+
     def __init__(self, config):
         self.config = config
+
+    @property
+    def artifact_dir(self):
+        """Where the agent writes artifacts, as seen from inside the instance."""
+        return str(self.config.get("sandbox_out_dir") or "/tmp/arsenal-out").rstrip("/")
 
     # -- capability probe ---------------------------------------------------
     def probe(self):
@@ -85,6 +94,10 @@ class SandboxBackend:
         to the tool in a way that never puts the key into argv.
         Returns the agent's exit code.
         """
+        raise NotImplementedError
+
+    def exec_capture(self, args):
+        """Run a short command inside the instance, capture (rc, stdout)."""
         raise NotImplementedError
 
     # -- artifact recovery ----------------------------------------------------
@@ -227,6 +240,10 @@ class SbxBackend(SandboxBackend):
             return "/" + path[0].lower() + path[2:]
         return path
 
+    def exec_capture(self, args):
+        result = self._run("exec", self.config["sandbox"], *args)
+        return result.returncode, result.stdout
+
     def clear_dir(self, sandbox_dir):
         result = self._run("exec", self.config["sandbox"], "rm", "-rf", sandbox_dir)
         return result.returncode == 0
@@ -279,3 +296,298 @@ class SbxBackend(SandboxBackend):
         source = "%s:%s/%s" % (self.config["sandbox"], sandbox_dir, name)
         result = self._run("cp", source, local_path)
         return result.returncode == 0 and os.path.isfile(local_path)
+
+
+BINDING_LABEL = "arsenal.project"
+
+
+@register
+class DockerBackend(SandboxBackend):
+    """Plain Docker containers. Bind-mount only, and only with consent.
+
+    sbx clones the project into a private microVM; a plain container has no
+    equivalent without a git remote inside the image, so this backend mounts
+    the host directory read-write - which hands the agent the host directory.
+    That is exactly the risk `i_accept_bind_mount_risk` exists for, so this
+    backend refuses to run without it (checked in runner preflight).
+
+    The binding is recorded as a label at create time and read back through
+    `docker inspect` - structured, so the wrong-tree check keeps working.
+    """
+
+    name = "docker"
+
+    def _bin(self):
+        binary = self.config.get("docker_bin") or "docker"
+        if isinstance(binary, (list, tuple)):
+            return list(binary)
+        return [binary]
+
+    def _run(self, *args):
+        import subprocess
+
+        return subprocess.run(
+            self._bin() + list(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def probe(self):
+        import shutil
+
+        if shutil.which(self._bin()[0]) is None:
+            raise BackendUnavailable(
+                "docker not on PATH. Install Docker Desktop (or an engine) "
+                "and reopen the shell."
+            )
+        result = self._run("info")
+        if result.returncode != 0:
+            raise BackendUnavailable(
+                "docker daemon not reachable - is Docker Desktop running?"
+            )
+        if not str(self.config.get("docker_image") or "").strip():
+            raise BackendError(
+                'backend "docker" needs "docker_image" in config: an image that '
+                "has the claude CLI and a git client inside."
+            )
+
+    def exists(self):
+        result = self._run(
+            "ps", "-a", "--filter",
+            "name=^/%s$" % self.config["sandbox"],
+            "--format", "{{.Names}}",
+        )
+        names = result.stdout.split()
+        return self.config["sandbox"] in names
+
+    def binding(self):
+        result = self._run(
+            "inspect",
+            "--format", "{{index .Config.Labels \"%s\"}}" % BINDING_LABEL,
+            self.config["sandbox"],
+        )
+        if result.returncode != 0:
+            return None
+        value = result.stdout.strip()
+        return value if value and "<no value>" not in value else None
+
+    def create(self):
+        import os
+
+        project = os.path.abspath(self.config["project_dir"])
+        result = self._run(
+            "run", "-d",
+            "--name", self.config["sandbox"],
+            "--label", "%s=%s" % (BINDING_LABEL, project),
+            "--mount",
+            "type=bind,source=%s,target=%s" % (project, self.in_sandbox_path(project)),
+            self.config["docker_image"],
+            "sleep", "infinity",
+        )
+        if result.returncode != 0:
+            print(result.stdout, end="", flush=True)
+            print("[arsenal] docker create failed with exit code %d" % result.returncode,
+                  flush=True)
+            return False
+        return True
+
+    def remove(self):
+        print("[arsenal] removing container %s" % self.config["sandbox"], flush=True)
+        self._run("rm", "-f", self.config["sandbox"])
+
+    def in_sandbox_path(self, host_path):
+        return str(self.config.get("docker_workspace") or "/workspace")
+
+    def exec_capture(self, args):
+        result = self._run("exec", self.config["sandbox"], *args)
+        return result.returncode, result.stdout
+
+    def clear_dir(self, sandbox_dir):
+        result = self._run("exec", self.config["sandbox"], "rm", "-rf", sandbox_dir)
+        return result.returncode == 0
+
+    def exec_agent(self, args, env_file, log_path):
+        import subprocess
+        import sys
+        import time
+
+        cmd = self._bin() + ["exec", "--env-file", env_file, self.config["sandbox"]] + list(args)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        started = time.time()
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            log_file.write(
+                "[arsenal] agent output for container %s\n" % self.config["sandbox"]
+            )
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                log_file.write(line)
+                log_file.flush()
+            proc.wait()
+            log_file.write("\n[arsenal] agent exit code %d\n" % proc.returncode)
+        print(
+            "[arsenal] agent finished in %ds with exit code %d"
+            % (int(time.time() - started), proc.returncode),
+            flush=True,
+        )
+        return proc.returncode
+
+    def fetch_dir(self, sandbox_dir, local_dir):
+        remote = "%s:%s" % (self.config["sandbox"], sandbox_dir)
+        result = self._run("cp", remote, local_dir)
+        return result.returncode == 0
+
+    def fetch_file(self, sandbox_dir, name, local_path):
+        import os
+
+        source = "%s:%s/%s" % (self.config["sandbox"], sandbox_dir, name)
+        result = self._run("cp", source, local_path)
+        return result.returncode == 0 and os.path.isfile(local_path)
+
+
+@register
+class NoneBackend(SandboxBackend):
+    """No isolation: the agent runs on this machine, in the project directory.
+
+    A legitimate backend, not an accident - for quick iteration and for CI
+    machines without any sandbox runtime. It changes the trust model: the
+    agent can touch anything this user can, so the runner refuses to start
+    without "i_accept_no_isolation": true in the config.
+
+    sandbox_out_dir is a sandbox-side path and means nothing here; artifacts
+    go to a fixed scratch directory under the system temp dir instead.
+    """
+
+    name = "none"
+    isolation = False
+
+    @property
+    def artifact_dir(self):
+        import os
+        import tempfile
+
+        return os.path.join(tempfile.gettempdir(), "arsenal-none-out")
+
+    def probe(self):
+        return None
+
+    def exists(self):
+        return True
+
+    def binding(self):
+        import os
+
+        return os.path.abspath(self.config["project_dir"])
+
+    def create(self):
+        print("[arsenal] none backend: no instance to create", flush=True)
+        return True
+
+    def remove(self):
+        print("[arsenal] none backend: no instance to remove", flush=True)
+
+    def in_sandbox_path(self, host_path):
+        import os
+
+        return os.path.abspath(host_path)
+
+    def _env_from_file(self, env_file):
+        import os
+
+        env = dict(os.environ)
+        try:
+            with open(env_file, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        key, value = line.split("=", 1)
+                        env[key] = value
+        except OSError:
+            pass
+        return env
+
+    def exec_capture(self, args):
+        import os
+        import subprocess
+
+        result = subprocess.run(
+            args,
+            cwd=self.config["project_dir"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return result.returncode, result.stdout
+
+    def clear_dir(self, sandbox_dir):
+        import shutil
+
+        shutil.rmtree(sandbox_dir, ignore_errors=True)
+        return True
+
+    def exec_agent(self, args, env_file, log_path):
+        import os
+        import subprocess
+        import sys
+        import time
+
+        proc = subprocess.Popen(
+            args,
+            cwd=self.config["project_dir"],
+            env=self._env_from_file(env_file),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        started = time.time()
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            log_file.write("[arsenal] agent output (none backend, no isolation)\n")
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                log_file.write(line)
+                log_file.flush()
+            proc.wait()
+            log_file.write("\n[arsenal] agent exit code %d\n" % proc.returncode)
+        print(
+            "[arsenal] agent finished in %ds with exit code %d"
+            % (int(time.time() - started), proc.returncode),
+            flush=True,
+        )
+        return proc.returncode
+
+    def fetch_dir(self, sandbox_dir, local_dir):
+        import os
+        import shutil
+
+        if not os.path.isdir(sandbox_dir):
+            return False
+        target = os.path.join(local_dir, os.path.basename(sandbox_dir.rstrip("/\\")))
+        shutil.copytree(sandbox_dir, target, dirs_exist_ok=True)
+        return True
+
+    def fetch_file(self, sandbox_dir, name, local_path):
+        import os
+        import shutil
+
+        source = os.path.join(sandbox_dir, name)
+        if not os.path.isfile(source):
+            return False
+        shutil.copyfile(source, local_path)
+        return os.path.isfile(local_path)
