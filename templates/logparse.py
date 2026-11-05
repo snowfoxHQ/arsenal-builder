@@ -109,15 +109,100 @@ def _from_counter(text):
     }
 
 
-def parse_log_text(text):
-    for parser in (_from_unittest, _from_pytest, _from_counter):
+def parse_log_text(text, extra_parsers=()):
+    for parser in (_from_unittest, _from_pytest, _from_counter, *extra_parsers):
         parsed = parser(text)
         if parsed:
             return parsed
     return None
 
 
-def parse_test_logs(run_dir):
+# ---- project-declared parsers (arsenal-parsers.py) ----
+
+PROJECT_PARSER_FILE = "arsenal-parsers.py"
+_FIELDS = ("passed", "failed", "skipped")
+
+
+class ProjectParserError(Exception):
+    """A project's arsenal-parsers.py exists but is unusable - fail closed."""
+
+
+def _declared_parser(name, regex):
+    def parse(text):
+        match = regex.search(text)
+        if not match:
+            return None
+        groups = match.groupdict()
+        counts = {}
+        for field in _FIELDS:
+            raw = groups.get(field)
+            if raw is not None:
+                counts[field] = int(raw)
+        if not counts:
+            return None
+        counts = dict((field, counts.get(field, 0)) for field in _FIELDS)
+        total = sum(counts.values())
+        if not total:
+            return None
+        return dict(format="project:%s" % name, total=total, **counts)
+
+    return parse
+
+
+def load_project_parsers(project_dir):
+    """Custom parsers from <project>/arsenal-parsers.py, declared as data.
+
+    Each PARSERS entry is {"name": ..., "pattern": ...}: a summary regex
+    whose named groups passed/failed/skipped map straight onto the count
+    fields. The host runs no project logic beyond compiling the declared
+    regexes, and the file's sha256 goes into the run manifest - so
+    --compare treats a parser change as a different experiment, and a
+    broken file stops the run instead of silently falling back.
+
+    Returns (parsers, registry); registry is None when the project ships
+    no parser file.
+    """
+    import hashlib
+
+    if not project_dir:
+        return [], None
+    path = os.path.join(project_dir, PROJECT_PARSER_FILE)
+    if not os.path.isfile(path):
+        return [], None
+    with open(path, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    namespace = {}
+    try:
+        exec(compile(source, path, "exec"), namespace)  # noqa: S102 - the project's own file
+    except Exception as exc:  # noqa: BLE001 - any load failure is a red flag
+        raise ProjectParserError("%s is not loadable: %s" % (path, exc))
+    entries = namespace.get("PARSERS")
+    if not isinstance(entries, list) or not entries:
+        raise ProjectParserError("%s must define a non-empty PARSERS list" % path)
+    parsers, names = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ProjectParserError("every PARSERS entry must be a dict")
+        name = entry.get("name")
+        pattern = entry.get("pattern")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name):
+            raise ProjectParserError("bad parser name %r" % (name,))
+        if not isinstance(pattern, str):
+            raise ProjectParserError("parser %r: pattern must be a string" % name)
+        if name in names:
+            raise ProjectParserError("duplicate parser name %r" % name)
+        try:
+            regex = re.compile(pattern, re.M)
+        except re.error as exc:
+            raise ProjectParserError("parser %r: %s" % (name, exc))
+        names.append(name)
+        parsers.append(_declared_parser(name, regex))
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    registry = {"source": PROJECT_PARSER_FILE, "sha256": digest, "names": names}
+    return parsers, registry
+
+
+def parse_test_logs(run_dir, extra_parsers=()):
     """Parse every <run_dir>/**/logs/test*.log the run pulled back."""
     suites = []
     for root, dirs, files in os.walk(run_dir):
@@ -132,7 +217,7 @@ def parse_test_logs(run_dir):
                     text = handle.read()
             except OSError:
                 continue
-            parsed = parse_log_text(text)
+            parsed = parse_log_text(text, extra_parsers)
             if parsed:
                 parsed["suite"] = name[: -len(".log")]
                 suites.append(parsed)

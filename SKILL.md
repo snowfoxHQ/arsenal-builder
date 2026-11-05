@@ -12,7 +12,7 @@ runs the test suite, and the **host decides the verdict**.
 The rule that makes this work: *the sandbox produces data, the host produces the
 verdict.* Never let the sandbox phrase the answer, and never let prose decide it.
 
-Current version: **3.0.3** — what changed and why is in `CHANGELOG.md`.
+Current version: **3.5.0** — what changed and why is in `CHANGELOG.md`.
 
 ## When to use this skill
 
@@ -250,6 +250,26 @@ sits at the root so the launcher can find the newest run without knowing where
 The whole directory is copied back on purpose: extra raw logs, coverage data or
 environment dumps the agent left behind come home automatically instead of being
 dropped because the host did not know their names in advance.
+
+### Project-declared parsers
+
+The host-side forensics read unittest / pytest / counter output out of the box.
+A project with a self-written harness can teach the gate its format: put an
+`arsenal-parsers.py` in the project root declaring a `PARSERS` list — each entry
+is `{"name": ..., "pattern": ...}`, a summary regex whose named groups
+`passed` / `failed` / `skipped` map straight onto the count fields:
+
+```python
+PARSERS = [
+    {"name": "myharness",
+     "pattern": r"^SUMMARY:\s*(?P<passed>\d+) passed,\s*(?P<failed>\d+) failed"},
+]
+```
+
+The parser participates in the gate exactly like a builtin one (strict tier
+becomes usable for such projects). The file's sha256 is recorded in the run
+manifest, so `--compare` treats a parser change as a different experiment, and
+a broken parser file stops the run instead of falling back silently.
 
 Read `summary.json` — it is the machine answer:
 

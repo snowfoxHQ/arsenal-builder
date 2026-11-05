@@ -556,6 +556,35 @@ def check_manifest_comparable(run_dir):
     return True, ""
 
 
+def check_parser_fingerprint(run_dir):
+    """A project-declared parser must be fingerprinted in the manifest, and
+    swapping it must make --compare declare the runs incomparable."""
+    path = os.path.join(run_dir, "run_manifest.json")
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    registry = data.get("parser_registry")
+    if not isinstance(registry, dict) or not registry.get("sha256"):
+        return False, "manifest does not record the project parser fingerprint"
+
+    tmp = tempfile.mkdtemp(prefix="arsenal-parser-")
+    try:
+        copy = os.path.join(tmp, "copy")
+        shutil.copytree(run_dir, copy)
+        mpath = os.path.join(copy, "run_manifest.json")
+        with open(mpath, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest["parser_registry"]["sha256"] = "0" * 64
+        with open(mpath, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = runner.main(["--compare", run_dir, copy])
+        if code != 1:
+            return False, "a swapped parser registry still compared comparable (code %d)" % code
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return True, ""
+
+
 def check_home_resolution(_run_dir=None):
     """Data paths hang off the arena root; code paths hang off the skill.
 
@@ -1320,6 +1349,46 @@ SCENARIOS = [
         "config": {"precision": "basic"},
     },
     {
+        "name": "project parser: custom harness strict ok",
+        "setup": lambda s: (
+            stage(s, make_result(total=15, passed=15), 0, b""),
+            _stage_log(s, "test_my.log", "SUMMARY: 15 passed, 0 failed\n"),
+        ),
+        "expect": 0,
+        "why": "a self-written harness becomes strict-eligible: its declared "
+        "parser reads the log, the claim survives the evidence, and the "
+        "manifest records the parser fingerprint",
+        "config": {"precision": "strict"},
+        "project_dir": lambda cfg: os.path.join(
+            os.path.dirname(cfg["out_dir"]), "parsers-ok"
+        ),
+        "check": check_parser_fingerprint,
+    },
+    {
+        "name": "project parser: false green caught",
+        "setup": lambda s: (
+            stage(s, make_result(total=15, passed=15), 0, b""),
+            _stage_log(s, "test_my.log", "SUMMARY: 15 passed, 3 failed\n"),
+        ),
+        "expect": 1,
+        "why": "the custom parser reads failures the result denies - under "
+        "strict the run fails outright, exactly like a builtin parser's word",
+        "config": {"precision": "strict"},
+        "project_dir": lambda cfg: os.path.join(
+            os.path.dirname(cfg["out_dir"]), "parsers-ok"
+        ),
+    },
+    {
+        "name": "project parser: broken file fails closed",
+        "setup": lambda s: stage(s, make_result(), 0, b""),
+        "expect": 2,
+        "why": "an unloadable arsenal-parsers.py stops the run before the "
+        "sandbox burns - never a silent fallback to builtins",
+        "project_dir": lambda cfg: os.path.join(
+            os.path.dirname(cfg["out_dir"]), "parsers-bad"
+        ),
+    },
+    {
         "name": "strict: false green fails",
         "setup": lambda s: (
             stage(s, make_result(), 0, b""),
@@ -1387,6 +1456,26 @@ def main():
         cfg, cfg_path, state = build_workspace(root)
         default_project = cfg["project_dir"]
         base_cfg = dict(cfg)
+
+        # Parser-registry fixtures: clones of the default project (same HEAD,
+        # so binding self-certification matches), one shipping a working
+        # declared parser, one shipping a broken parser file.
+        parsers_ok = os.path.join(root, "parsers-ok")
+        shutil.copytree(default_project, parsers_ok)
+        with open(os.path.join(parsers_ok, "arsenal-parsers.py"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "PARSERS = [\n"
+                "    {\n"
+                '        "name": "myharness",\n'
+                '        "pattern": r"^SUMMARY:\\s*(?P<passed>\\d+)\\s+passed,\\s*'
+                '(?P<failed>\\d+)\\s+failed(?:,\\s*(?P<skipped>\\d+)\\s+skipped)?\\s*$",\n'
+                "    },\n"
+                "]\n"
+            )
+        parsers_bad = os.path.join(root, "parsers-bad")
+        shutil.copytree(default_project, parsers_bad)
+        with open(os.path.join(parsers_bad, "arsenal-parsers.py"), "w", encoding="utf-8") as fh:
+            fh.write("PARSERS = oops this is not valid python\n")
 
         with open(os.path.join(root, "fake_docker.py"), "w", encoding="utf-8") as fh:
             fh.write(FAKE_DOCKER)

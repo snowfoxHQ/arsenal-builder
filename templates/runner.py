@@ -26,7 +26,12 @@ import time
 
 from arsenal_contract import Verdict, load_json, validate
 from backends import BackendError, BackendUnavailable, get_backend
-from logparse import cross_check, parse_test_logs
+from logparse import (
+    ProjectParserError,
+    cross_check,
+    load_project_parsers,
+    parse_test_logs,
+)
 
 DEFAULT_CONFIG = {
     # Which sandbox backend drives the run. "sbx" is the reference
@@ -820,10 +825,22 @@ def main(argv=None):
     # Preflight already validated the backend; building it again here cannot
     # fail, and both the agent path and artifact recovery go through it.
     backend = get_backend(config)
+    # Project-declared parsers load before anything can fail: a broken
+    # arsenal-parsers.py stops the run here instead of silently falling back
+    # to builtins mid-forensics. The registry fingerprint joins the manifest,
+    # so --compare treats a parser change as a different experiment.
+    try:
+        extra_parsers, parser_registry = load_project_parsers(
+            config.get("project_dir")
+        )
+    except ProjectParserError as exc:
+        log("project parsers rejected: %s" % exc)
+        return EXIT_SETUP
     # The environment facts of this run, written before anything can fail:
     # even a crashed run leaves behind what it ran ON, which is what makes two
     # run directories comparable (or honestly incomparable).
     manifest = build_manifest(config, backend)
+    manifest["parser_registry"] = parser_registry or {"source": "builtins"}
     manifest_sha = manifest_hash(manifest)
 
     resumed = None
@@ -1060,7 +1077,7 @@ def main(argv=None):
         and precision in ("standard", "strict")
         and isinstance(verdict.data, dict)
     ):
-        suites = parse_test_logs(run_dir)
+        suites = parse_test_logs(run_dir, extra_parsers)
         suspects = cross_check(suites, verdict.data)
         if (
             precision == "strict"
