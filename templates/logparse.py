@@ -26,7 +26,12 @@ _UNITTEST_TAIL = re.compile(
     r"^FAILED \((.*)\)", re.M
 )
 _PYTEST_SUMMARY = re.compile(
-    r"=+\s*(.*?)\s+in [\d.]+s\s*(?:=+\s*)?$", re.M
+    # pytest prints the final line decorated (`==== 3 failed in 0.4s ====`)
+    # on a tty but bare (`3 failed in 0.4s`) when redirected to a file - and
+    # redirected is exactly how the agent captures it (2026-11-05: the bare
+    # form parsed as None and the whole pytest branch went untested).
+    r"^(?:=+\s*)?(.*?)\s+in\s+[\d.]+s\s*(?:=+\s*)?$",
+    re.M,
 )
 _PYTEST_ITEM = re.compile(r"(\d+) (passed|failed|skipped|errors?|error)")
 _COUNTER = re.compile(r"(\d+)\s*/\s*(\d+)")
@@ -70,9 +75,14 @@ def _from_pytest(text):
         return None
     counts = {"passed": 0, "failed": 0, "skipped": 0}
     for count, kind in _PYTEST_ITEM.findall(summary):
-        key = "skipped" if kind.startswith("skip") else kind.rstrip("s")
-        if key in counts:
-            counts[key] += int(count)
+        # errors are failures with a traceback: counting them as neither
+        # passed nor failed would understate total and hide the bad news
+        if kind.startswith("skip"):
+            counts["skipped"] += int(count)
+        elif kind.startswith("error"):
+            counts["failed"] += int(count)
+        elif kind in counts:
+            counts[kind] += int(count)
     total = sum(counts.values())
     if not total:
         return None

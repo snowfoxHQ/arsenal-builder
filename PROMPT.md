@@ -31,8 +31,12 @@ Keep technical terms, commands, file paths and test names in their original form
    - `{{REPORT_PATH}}` — the report, following the outline below
 6. Leave the raw evidence there too, because the host keeps everything in
    `{{OUT_DIR}}` and will not accept a summary with nothing behind it:
-   - `{{OUT_DIR}}/logs/<suite>.log` — the verbatim stdout+stderr of each test
-     command, unedited and untruncated
+   - `{{OUT_DIR}}/logs/test-<suite>.log` — the verbatim stdout+stderr of each
+     test command, unedited and untruncated. The file name MUST start with
+     `test` (for example `test-pytest.log`, `test-unittest.log`): the host's
+     log forensics only read `test*.log`, and a differently named log is
+     evidence the host never sees (2026-11-05: a green `unittest.log` hid a
+     stale-code run from the forensics entirely)
    - `{{OUT_DIR}}/logs/env.txt` — interpreter version, package manager version,
      and the installed versions of the dependencies you used
    Do not clean up or overwrite these files between runs.

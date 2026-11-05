@@ -1235,6 +1235,44 @@ SCENARIOS = [
         "config": {"precision": "standard"},
     },
     {
+        "name": "pytest: short summary consistent",
+        "setup": lambda s: (
+            stage(s, make_result(total=40, passed=40), 0, b""),
+            _stage_log(s, "test_pytest.log", "40 passed in 0.07s\n"),
+        ),
+        "expect": 0,
+        "why": "pytest 9 redirected to a file prints no ==== banner - the "
+        "parser must still read it (2026-11-05: this shape parsed as None)",
+        "config": {"precision": "standard"},
+    },
+    {
+        "name": "pytest: short summary false green caught",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_pytest.log", "40 passed in 0.07s\n"),
+        ),
+        "expect": 3,
+        "why": "the raw pytest log shows 40 tests where the result claims 230",
+        "config": {"precision": "standard"},
+    },
+    {
+        "name": "pytest: banner with errors",
+        "setup": lambda s: (
+            stage(s, make_result(total=20, passed=17, failed=3), 0, b""),
+            _stage_log(
+                s,
+                "test_pytest.log",
+                "=========== 1 failed, 2 errors, 17 passed in 0.31s ===========\n",
+            ),
+        ),
+        "expect": 1,
+        "why": "banner style still parses and errors count as failed: the claim "
+        "is consistent with the log, so the run fails on its own numbers (1); "
+        "were errors dropped instead, the totals would disagree and the run "
+        "would end BLOCKED on suspects (3) - a different exit code, on purpose",
+        "config": {"precision": "standard"},
+    },
+    {
         "name": "basic ignores logs",
         "setup": lambda s: (
             stage(s, make_result(), 0, b""),
