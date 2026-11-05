@@ -622,3 +622,22 @@ README 说「依赖表决定两次运行可比」，但那张表是 agent 写的
 
 selftest：29 场景（新增 manifest comparable），审计夹具要求
 run_manifest.json 且 project_commit 与夹具 HEAD 一致。全绿。
+
+## v3.2.2 — 2026-11-05
+
+**灵活应用：profile 差异覆盖 + 幂等续跑（--resume）。**
+
+- `--profile <name>`：深合并 `<home>/configs/<name>.json` 到 config.json，
+  profile 只写差异字段（如 CI 用 `{"report_depth": "brief"}`）。profile 缺失
+  或非法 → 退出码 2。红线不变：profile 能改报告形态与后端，**改不了通过
+  标准**——判定阶段的失败语义仍写死在代码里。
+- `--resume <run_dir>`：复用原 run 目录（run_id 不变，nonce 自洽）。三态：
+  ① `stages/agent.json` 记录的 manifest 哈希一致且 result.json 带本 run
+  nonce → **跳过 agent**（不烧 token），直接重验产物；② 阶段未完成/崩过 →
+  重跑 agent（补写阶段记录）；③ manifest 有任何差异 → 拒绝（退出码 2），
+  续跑不同实验等于伪造出处。
+- summary.json 新增 `resumed` / `agent_skipped`；install.bat 建 `configs\`。
+
+selftest：新增 lifecycle 套件（baseline 干净跑 → sabotage exec.rc=137 验证
+跳过 → 阶段记录改 137 验证重跑 → 改 manifest 验证拒绝 → profile 指向非 git
+目录验证覆盖生效），29 场景 + 三套件全绿。

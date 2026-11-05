@@ -341,10 +341,10 @@ def stage(state, result=None, exec_rc=0, exec_output=b"", workspace=None, report
             handle.write(workspace)
 
 
-def run_runner(cfg_path):
+def run_runner(cfg_path, extra=None):
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
-        code = runner.main(["--config", cfg_path])
+        code = runner.main(["--config", cfg_path] + list(extra or []))
 
     with open(cfg_path, "r", encoding="utf-8") as handle:
         out_dir = json.load(handle)["out_dir"]
@@ -354,6 +354,91 @@ def run_runner(cfg_path):
         with open(latest, "r", encoding="utf-8") as handle:
             run_dir = handle.read().strip()
     return code, buffer.getvalue(), run_dir
+
+
+def load_summary(run_dir):
+    path = os.path.join(run_dir, "summary.json")
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def run_lifecycle_checks(base_cfg, cfg_path, state):
+    """Resume and profile, end to end.
+
+    Resume must skip a completed agent stage (even with a sabotaged fake CLI,
+    which would fail the run if the agent were actually invoked again), rerun
+    a crashed one, and refuse a changed environment manifest. A profile must
+    reach the runner as a deep overlay.
+    """
+    problems = []
+
+    def write_cfg(overrides=None):
+        cfg = dict(base_cfg)
+        cfg.update(overrides or {})
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+
+    reset_state(state)
+    stage(state, make_result(), 0, b"")
+    write_cfg()
+    code_a, _, run_dir = run_runner(cfg_path)
+    if code_a != 0 or not run_dir:
+        return False, "baseline run for lifecycle checks failed (code %s)" % code_a
+
+    # 1. completed agent stage + sabotaged exec -> the agent must be skipped
+    with open(os.path.join(state, "exec.rc"), "w", encoding="utf-8") as fh:
+        fh.write("137")
+    write_cfg()
+    code, _, _ = run_runner(cfg_path, extra=["--resume", run_dir])
+    if code != 0:
+        problems.append("resume did not skip the completed agent stage (code %d)" % code)
+    elif not load_summary(run_dir).get("agent_skipped"):
+        problems.append("resume passed without recording agent_skipped")
+
+    # 2. crashed agent stage -> resume reruns the agent
+    stages_path = os.path.join(run_dir, "stages", "agent.json")
+    with open(stages_path, encoding="utf-8") as fh:
+        record = json.load(fh)
+    record["exit_code"] = 137
+    with open(stages_path, "w", encoding="utf-8") as fh:
+        json.dump(record, fh)
+    reset_state(state)
+    stage(state, make_result(), 0, b"")
+    write_cfg()
+    code, _, _ = run_runner(cfg_path, extra=["--resume", run_dir])
+    if code != 0:
+        problems.append("resume did not rerun a crashed agent stage (code %d)" % code)
+
+    # 3. changed environment manifest -> refuse
+    manifest_path = os.path.join(run_dir, "run_manifest.json")
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    manifest["host_python"] = "0.0.0"
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+    write_cfg()
+    code, _, _ = run_runner(cfg_path, extra=["--resume", run_dir])
+    if code != 2:
+        problems.append("resume accepted a changed environment (code %d)" % code)
+
+    # 4. profile overlay must reach the runner: point project_dir at a
+    # non-repo, preflight must flip to exit 2.
+    configs_dir = os.path.join(os.path.dirname(cfg_path), "configs")
+    os.makedirs(configs_dir, exist_ok=True)
+    with open(os.path.join(configs_dir, "badproj.json"), "w", encoding="utf-8") as fh:
+        json.dump(
+            {"project_dir": os.path.join(os.path.dirname(cfg_path), "notrepo")}, fh
+        )
+    reset_state(state)
+    stage(state, make_result(), 0, b"")
+    write_cfg()
+    code, _, _ = run_runner(cfg_path, extra=["--profile", "badproj"])
+    if code != 2:
+        problems.append("profile override did not reach the runner (code %d)" % code)
+
+    return (not problems, "; ".join(problems))
 
 
 def check_run_dir(run_dir):
@@ -1151,11 +1236,20 @@ def main():
         )
         if not contract_ok:
             failures += 1
-            print("%-22s %-8s %-8s %s" % ("backend contracts", "pass", "fail", "MISMATCH"))
+            print("%-24s %-8s %-8s %s" % ("backend contracts", "pass", "fail", "MISMATCH"))
             for line in contract_detail.split("; "):
                 print("    %s" % line)
         else:
-            print("%-22s %-8s %-8s %s" % ("backend contracts", "pass", "pass", "ok"))
+            print("%-24s %-8s %-8s %s" % ("backend contracts", "pass", "pass", "ok"))
+
+        life_ok, life_detail = run_lifecycle_checks(base_cfg, cfg_path, state)
+        if not life_ok:
+            failures += 1
+            print("%-24s %-8s %-8s %s" % ("resume/profile", "pass", "fail", "MISMATCH"))
+            for line in life_detail.split("; "):
+                print("    %s" % line)
+        else:
+            print("%-24s %-8s %-8s %s" % ("resume/profile", "pass", "pass", "ok"))
         print("-" * 72)
         if failures:
             print("%d scenario(s) MISMATCH - the gate is not trustworthy." % failures)

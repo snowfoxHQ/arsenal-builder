@@ -344,6 +344,25 @@ def check_binding(backend, config):
     return binding_by_nonce(backend, project)
 
 
+def agent_stage_done(run_dir, config, manifest_sha, run_id):
+    """True when the agent stage already completed against this environment.
+
+    All three must hold, or the agent runs again: a stage record written only
+    after a clean agent exit, with the same manifest hash; the artifacts
+    already pulled back to the host; and a result carrying this run's nonce.
+    """
+    record = load_json(os.path.join(run_dir, "stages", "agent.json"))
+    if not isinstance(record, dict):
+        return False
+    if record.get("manifest_hash") != manifest_sha:
+        return False
+    if record.get("exit_code") != 0:
+        return False
+    result_path = find_artifact(run_dir, config["result_name"])
+    data = load_json(result_path) if os.path.isfile(result_path) else None
+    return isinstance(data, dict) and data.get("run_id") == run_id
+
+
 def write_env_file(api_key):
     """Write the key to a 0600 temp file so it never reaches argv."""
     handle = tempfile.NamedTemporaryFile(
@@ -629,6 +648,29 @@ def compare_manifests(dir_a, dir_b):
     return EXIT_PASS
 
 
+def deep_merge(base, overlay):
+    """Overlay wins; dicts merge recursively so a profile only names diffs."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_profile(home, name):
+    """Load <home>/configs/<name>.json. Returns (profile dict, error string)."""
+    filename = name if name.endswith(".json") else name + ".json"
+    path = os.path.join(home, "configs", filename)
+    data = load_json(path)
+    if data is None:
+        return None, "profile not found or not valid JSON: %s" % path
+    if not isinstance(data, dict):
+        return None, "profile must be a JSON object: %s" % path
+    return data, ""
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Arsenal test pipeline runner")
     parser.add_argument("--config", default="config.json")
@@ -637,6 +679,20 @@ def main(argv=None):
         default=None,
         help="arsenal home: the directory that holds the project and the reports "
         "(default: $%s, else the skill directory)" % HOME_ENV,
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="deep-merge <home>/configs/<name>.json over config.json - a profile "
+        "names only the fields that differ (report_depth, backend, ...)",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        metavar="RUN_DIR",
+        help="continue an earlier run directory: reuse it, skip the agent when "
+        "its stage already completed against the same manifest, rerun it "
+        "otherwise. Refuses when the environment manifest has changed.",
     )
     parser.add_argument("--recreate", action="store_true", help="rebuild the sandbox first")
     parser.add_argument("--dry-run", action="store_true", help="preflight only")
@@ -698,6 +754,13 @@ def main(argv=None):
         log("no config file at %s, using defaults" % config_path)
 
     config["home"] = home
+    if args.profile:
+        profile, error = load_profile(home, args.profile)
+        if profile is None:
+            log(error)
+            return EXIT_SETUP
+        config = deep_merge(config, profile)
+        log("profile %r merged (%d override(s))" % (args.profile, len(profile)))
     # The prompt is code (it ships with the skill); the project and the report
     # archive are data (they belong to the home). Mixing the two is how a
     # reinstall ends up wiping the reports.
@@ -723,22 +786,63 @@ def main(argv=None):
         log("preflight passed; dry run stops here")
         return EXIT_PASS
 
-    # A run id must be unique, not just timestamped. Two runs in the same second
-    # used to share a directory, so the second one inherited the first one's
-    # result.json and reported a verdict about a test it never ran.
-    run_id, run_dir = make_run_dir(config["out_dir"])
-    log("run directory: %s" % run_dir)
+    # Preflight already validated the backend; building it again here cannot
+    # fail, and both the agent path and artifact recovery go through it.
+    backend = get_backend(config)
+    # The environment facts of this run, written before anything can fail:
+    # even a crashed run leaves behind what it ran ON, which is what makes two
+    # run directories comparable (or honestly incomparable).
+    manifest = build_manifest(config, backend)
+    manifest_sha = manifest_hash(manifest)
+
+    resumed = None
+    if args.resume:
+        resumed = os.path.abspath(args.resume)
+        if not os.path.isdir(resumed):
+            log("resume target is not a directory: %s" % resumed)
+            return EXIT_SETUP
+        old_manifest = load_json(os.path.join(resumed, "run_manifest.json"))
+        if not isinstance(old_manifest, dict):
+            log("resume target has no readable run_manifest.json: %s" % resumed)
+            return EXIT_SETUP
+        differences = [
+            key
+            for key in sorted(set(old_manifest) | set(manifest))
+            if old_manifest.get(key) != manifest.get(key)
+        ]
+        if differences:
+            log(
+                "refusing to resume %s - the environment changed since it ran: %s"
+                % (resumed, ", ".join(differences))
+            )
+            log("start a fresh run instead; resuming a different experiment "
+                "would forge its provenance")
+            return EXIT_SETUP
+        run_id = os.path.basename(resumed)
+        run_dir = resumed
+        log("resuming run %s" % run_dir)
+    else:
+        # A run id must be unique, not just timestamped. Two runs in the same second
+        # used to share a directory, so the second one inherited the first one's
+        # result.json and reported a verdict about a test it never ran.
+        run_id, run_dir = make_run_dir(config["out_dir"])
+        log("run directory: %s" % run_dir)
     # The run id doubles as the freshness nonce: it is rendered into the prompt,
     # the agent must copy it into result.json, and the gate rejects a result
     # without the matching id - so output left by an earlier run can never be
     # mistaken for this run's verdict.
     config["run_id"] = run_id
 
+    with open(os.path.join(run_dir, "run_manifest.json"), "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as handle:
         json.dump(
             {
                 "run_id": run_id,
                 "state": "running",
+                "resumed": bool(resumed),
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "paths": {
                     "home": config.get("home"),
@@ -756,26 +860,11 @@ def main(argv=None):
 
     agent_log = os.path.join(run_dir, "agent.log")
     agent_code = None
+    agent_skipped = False
     error = None
     verdict = None
     got_result = got_report = False
     binding_status = "unchecked"
-
-    # Everything from here on can fail halfway - a dropped console, a killed
-    # process, a sandbox that never starts. The run directory must still end up
-    # with a summary.json, otherwise the host is left holding an empty folder
-    # and no way to tell "nothing happened" from "it worked and I lost the data".
-    # Preflight already validated the backend; building it again here cannot
-    # fail, and both the agent path and artifact recovery go through it.
-    backend = get_backend(config)
-
-    # The environment facts of this run, written before anything can fail:
-    # even a crashed run leaves behind what it ran ON, which is what makes two
-    # run directories comparable (or honestly incomparable).
-    manifest = build_manifest(config, backend)
-    with open(os.path.join(run_dir, "run_manifest.json"), "w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
 
     try:
         if args.collect:
@@ -794,58 +883,91 @@ def main(argv=None):
                     "(binding check got %r)" % (config["project_dir"], detail)
                 )
         else:
-            if config.get("recreate") and backend.exists():
-                backend.remove()
-
-            if not backend.exists():
+            if resumed and agent_stage_done(run_dir, config, manifest_sha, run_id):
+                # The whole point of resume: an agent stage that already
+                # completed against the same environment must not burn tokens
+                # again. The gate below still validates the artifacts fresh.
                 log(
-                    "creating sandbox %s (%s mode)"
-                    % (config["sandbox"], config["workspace_mode"])
+                    "agent stage already completed for this manifest - skipping "
+                    "the agent, validating the artifacts already on the host"
                 )
-                if not backend.create():
-                    raise RuntimeError("sandbox create failed - see the output above")
-                binding_status = "fresh-instance"
+                agent_code = 0
+                agent_skipped = True
             else:
-                log("reusing existing sandbox %s" % config["sandbox"])
-                # A sandbox is bound to one host directory for its whole life.
-                # Reusing one that was cloned from a different project silently
-                # tests the wrong tree - which is exactly how a run once reported
-                # on sandbox-workspaces/vecRecall instead of the project asked for.
-                binding_status, detail = check_binding(backend, config)
-                if binding_status == "mismatch":
-                    raise RuntimeError(
-                        "sandbox %r belongs to a different tree (binding check got "
-                        "%r), not project_dir %s - rerun with --recreate to rebuild it"
-                        % (config["sandbox"], detail, config["project_dir"])
-                    )
-                if binding_status == "unknown":
+                if config.get("recreate") and backend.exists():
+                    backend.remove()
+
+                if not backend.exists():
                     log(
-                        "warning: could not verify the sandbox binding - continuing, "
-                        "the run_id nonce still guarantees freshness"
+                        "creating sandbox %s (%s mode)"
+                        % (config["sandbox"], config["workspace_mode"])
+                    )
+                    if not backend.create():
+                        raise RuntimeError(
+                            "sandbox create failed - see the output above"
+                        )
+                    binding_status = "fresh-instance"
+                else:
+                    log("reusing existing sandbox %s" % config["sandbox"])
+                    # A sandbox is bound to one host directory for its whole life.
+                    # Reusing one that was cloned from a different project silently
+                    # tests the wrong tree - which is exactly how a run once reported
+                    # on sandbox-workspaces/vecRecall instead of the project asked for.
+                    binding_status, detail = check_binding(backend, config)
+                    if binding_status == "mismatch":
+                        raise RuntimeError(
+                            "sandbox %r belongs to a different tree (binding check got "
+                            "%r), not project_dir %s - rerun with --recreate to rebuild it"
+                            % (config["sandbox"], detail, config["project_dir"])
+                        )
+                    if binding_status == "unknown":
+                        log(
+                            "warning: could not verify the sandbox binding - continuing, "
+                            "the run_id nonce still guarantees freshness"
+                        )
+
+                # Cheap half of the freshness guarantee: no leftover output can be
+                # fetched back if the folder is empty before the agent starts. The
+                # strong half is the run_id nonce, checked by the gate below.
+                out_dir = backend.artifact_dir
+                if not backend.clear_dir(out_dir):
+                    log(
+                        "warning: could not clear %s inside the sandbox; the run_id "
+                        "nonce still guards against stale output" % out_dir
                     )
 
-            # Cheap half of the freshness guarantee: no leftover output can be
-            # fetched back if the folder is empty before the agent starts. The
-            # strong half is the run_id nonce, checked by the gate below.
-            out_dir = backend.artifact_dir
-            if not backend.clear_dir(out_dir):
-                log(
-                    "warning: could not clear %s inside the sandbox; the run_id "
-                    "nonce still guards against stale output" % out_dir
-                )
-
-            prompt = build_prompt(config, backend)
-            env_file = write_env_file(os.environ[KEY_ENV])
-            try:
-                log("executing tests inside %s" % config["sandbox"])
-                agent_code = backend.exec_agent(
-                    run_agent_command(config, prompt), env_file, agent_log
-                )
-            finally:
+                prompt = build_prompt(config, backend)
+                env_file = write_env_file(os.environ[KEY_ENV])
                 try:
-                    os.unlink(env_file)
-                except OSError:
-                    pass
+                    log("executing tests inside %s" % config["sandbox"])
+                    agent_code = backend.exec_agent(
+                        run_agent_command(config, prompt), env_file, agent_log
+                    )
+                finally:
+                    try:
+                        os.unlink(env_file)
+                    except OSError:
+                        pass
+
+                # The stage record is what makes a later --resume cheap: it is
+                # written only after a clean agent exit, and carries the
+                # manifest hash so a changed environment can never inherit it.
+                stage_dir = os.path.join(run_dir, "stages")
+                os.makedirs(stage_dir, exist_ok=True)
+                with open(
+                    os.path.join(stage_dir, "agent.json"), "w", encoding="utf-8"
+                ) as handle:
+                    json.dump(
+                        {
+                            "stage": "agent",
+                            "manifest_hash": manifest_sha,
+                            "exit_code": agent_code,
+                            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        },
+                        handle,
+                        indent=2,
+                    )
+                    handle.write("\n")
 
         got_result, got_report = fetch_outputs(config, run_dir, backend)
         log("result.json: %s" % ("fetched" if got_result else "MISSING"))
@@ -943,6 +1065,8 @@ def main(argv=None):
             "run": run_dir,
         },
         "agent_exit_code": agent_code,
+        "resumed": bool(resumed),
+        "agent_skipped": agent_skipped,
         "state": "error" if error else verdict.state,
         "passed": exit_code == EXIT_PASS,
         "exit_code": exit_code,
