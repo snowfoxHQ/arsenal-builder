@@ -1,4 +1,4 @@
-# AI Arsenal Builder 3.4.0 —— 完整手册
+# AI Arsenal Builder 3.5.0 —— 完整手册
 
 [![selftest](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml/badge.svg)](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml)
 

@@ -95,7 +95,7 @@ EXIT_BLOCKED = 3
 
 # Kept in step with the root VERSION.txt; run_manifest.json records it so two
 # runs can be told apart by tooling, not by humans reading dates.
-RUNNER_VERSION = "3.4.0"
+RUNNER_VERSION = "3.5.0"
 
 # Config keys that describe one run rather than the environment it ran in.
 # Excluded from the fingerprint - they differ between runs on purpose.
