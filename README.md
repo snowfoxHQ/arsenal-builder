@@ -1,4 +1,7 @@
-# AI Arsenal Builder 3.3.2 —— 完整手册
+# AI Arsenal Builder 3.3.3 —— 完整手册
+
+[![selftest](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml/badge.svg)](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml)
+
 
 一个**独立可分发的 Agent Skill 包**：让 LLM 代理在隔离沙箱里跑测试，
 **判定权留在宿主**。沙箱后端可换（sbx microVM / Docker / 无隔离），

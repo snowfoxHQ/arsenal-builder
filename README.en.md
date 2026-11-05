@@ -1,4 +1,7 @@
-# AI Arsenal Builder 3.3.2 — Full Manual
+# AI Arsenal Builder 3.3.3 — Full Manual
+
+[![selftest](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml/badge.svg)](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml)
+
 
 A **self-contained, distributable Agent Skill package**: an LLM agent runs your
 tests inside an isolated sandbox, and the **host decides the verdict**. The
