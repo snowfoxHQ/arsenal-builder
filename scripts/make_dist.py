@@ -82,7 +82,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=os.path.join(ROOT, "dist"))
     parser.add_argument("--notes", default=None)
+    parser.add_argument("--check-tag", default=None, dest="check_tag")
     args = parser.parse_args()
+
+    if args.check_tag:
+        expected = "v" + runner_version()
+        if args.check_tag != expected:
+            sys.exit(
+                "make_dist: tag %s does not match RUNNER_VERSION (expected %s)"
+                % (args.check_tag, expected)
+            )
+        print("tag %s matches RUNNER_VERSION %s" % (args.check_tag, expected))
+        if not args.notes:
+            return 0
 
     _, version = build(args.out)
     if args.notes:

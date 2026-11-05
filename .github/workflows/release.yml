@@ -32,14 +32,7 @@ jobs:
         run: python templates/selftest.py
 
       - name: Version must match the tag
-        shell: pwsh
-        run: |
-          $ver = python -c "import re;print(re.search(r'RUNNER_VERSION = \"([^\"]+)\"', open('templates/runner.py',encoding='utf-8').read()).group(1))"
-          if ($env:GITHUB_REF_NAME -ne "v$ver") {
-            Write-Error "tag $env:GITHUB_REF_NAME does not match RUNNER_VERSION $ver"
-            exit 1
-          }
-          echo "version: $ver"
+        run: python scripts/make_dist.py --check-tag $env:GITHUB_REF_NAME
 
       - name: Build the dist zip and notes
         run: python scripts/make_dist.py --notes release-notes.md
