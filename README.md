@@ -1,13 +1,18 @@
-# AI Arsenal Builder 3.0.3 —— 完整手册
+# AI Arsenal Builder 3.3.2 —— 完整手册
 
-在 Windows 上用 Docker `sbx` 沙箱搭一个**专用 AI 测试平台**：
-DeepSeek Harness 在宿主，Claude Code 在沙箱里跑测试，**判定权留在宿主**。
+一个**独立可分发的 Agent Skill 包**：让 LLM 代理在隔离沙箱里跑测试，
+**判定权留在宿主**。沙箱后端可换（sbx microVM / Docker / 无隔离），
+判定语义不可换。
 
 一句话法则：**沙箱只产数据，宿主才下结论。**
 
-> 本手册随包分发：架构原理（第一节）+ 实际操作步骤（第二节）+ 故障排查（第三节）。
-> 这台机器自己的现状（目录布局、归档说明）见根目录 `README.md`；
+它不依赖任何宿主也能工作：`python templates\runner.py` 直接跑；
+放进任何支持 skill 的宿主的 skills 目录，`SKILL.md` 即被识别。
+
+> 本仓库就是包本身：架构原理（第一节）+ 操作步骤（第二节）+ 故障排查（第三节）。
 > 每一版改了什么、为什么改，见 `CHANGELOG.md`。
+> 本机工作台（启动器 `arsenal.cmd`、`config.json`、`reports\`、demo 靶）
+> 是另一个仓库：[ai-arsenal](https://github.com/snowfoxHQ/ai-arsenal)。
 
 ---
 

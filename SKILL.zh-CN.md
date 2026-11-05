@@ -1,6 +1,6 @@
 ---
 name: arsenal-builder
-description: 在 Windows 上用 Docker sbx 沙箱搭建隔离式 AI 测试平台：沙箱内 Agent 跑测试并产出结构化结果，宿主机校验契约后判定 Pass/Fail。当需要搭建、修复或审查「AI 兵工厂」「sbx 沙箱测试」「测试门禁永远报成功」这类流水线时使用。
+description: 搭建、运行或修复 fail-closed 的 AI 测试流水线：LLM 代理在隔离沙箱（sbx microVM / Docker / 无隔离）内跑测试，宿主机凭可机器复核的证据（run_id 新鲜度、commit 绑定、宿主侧日志取证防假绿、崩溃低成本续跑）判定 Pass/Fail。当需要搭建、修复或审查「AI 兵工厂」「沙箱测试」「测试门禁永远报成功」这类流水线时使用。
 ---
 
 # AI 兵工厂搭建指南

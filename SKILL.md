@@ -1,6 +1,6 @@
 ---
 name: arsenal-builder
-description: Set up or fix an isolated AI test platform on Windows using Docker sbx sandboxes, where the sandbox agent runs tests and the host validates a JSON contract to decide Pass/Fail. Use when asked to build, repair, or audit a sandboxed AI testing pipeline (AI 兵工厂, sbx 沙箱测试, automated test gate).
+description: Run or repair a fail-closed test pipeline where an LLM agent executes tests inside an isolated sandbox (sbx microVM, Docker, or none) and the host decides Pass/Fail from machine-checkable evidence: run_id freshness, commit binding, host-side log forensics against false greens, crash-cost resume. Use when asked to build, repair, or audit an AI testing pipeline (AI 兵工厂, 沙箱测试, automated test gate).
 ---
 
 # AI Arsenal Builder

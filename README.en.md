@@ -1,15 +1,20 @@
-# AI Arsenal Builder 3.0.3 — Full Manual
+# AI Arsenal Builder 3.3.2 — Full Manual
 
-A dedicated AI test platform for Windows: **DeepSeek Harness on the host** drives
-**Docker `sbx` sandboxes (untrusted)**, a Claude Code agent inside the sandbox runs
-the suite, and the **host decides the verdict**.
+A **self-contained, distributable Agent Skill package**: an LLM agent runs your
+tests inside an isolated sandbox, and the **host decides the verdict**. The
+sandbox backend is swappable (`sbx` microVM / Docker / no isolation); the
+verdict semantics are not.
 
 One-sentence rule: **the sandbox produces data, the host produces the verdict.**
 
-> This manual ships with the package: architecture principles (section 1),
-> step-by-step operation (section 2), troubleshooting (section 3).
-> The state of *this machine* (layout, archive) lives in the root `README.md`;
-> what changed in each version and why lives in `CHANGELOG.md`.
+It works without any host: `python templates\runner.py` runs as-is, and dropping
+this folder into a host's skills directory makes `SKILL.md` discoverable.
+
+> This repository *is* the package: architecture principles (section 1),
+> step-by-step operation (section 2), troubleshooting (section 3), and
+> `CHANGELOG.md` for the why behind each version.
+> The machine workbench (`arsenal.cmd`, `config.json`, `reports\`) is a
+> separate repo: [ai-arsenal](https://github.com/snowfoxHQ/ai-arsenal).
 
 ---
 
