@@ -93,8 +93,15 @@ def same_commit(got, expected):
     return len(shorter) >= 7 and longer.startswith(shorter)
 
 
-def validate(result_path, expect_commit=None):
-    """Validate result.json and return a Verdict. Never raises on bad input."""
+def validate(result_path, expect_commit=None, expect_run_id=None):
+    """Validate result.json and return a Verdict. Never raises on bad input.
+
+    expect_run_id turns the gate into a freshness check: the agent is told the
+    run id in the prompt and must copy it verbatim into result.json. A result
+    without the matching id is output left over from an earlier run - schema,
+    counts and commit may all look perfect, and it still proves nothing about
+    this run.
+    """
     if not result_path:
         return Verdict(False, ["no result path configured"])
 
@@ -158,6 +165,18 @@ def validate(result_path, expect_commit=None):
         reasons.append(
             "commit mismatch: got %r, expected %r" % (data["commit"], expect_commit)
         )
+
+    if expect_run_id is not None:
+        got_run_id = data.get("run_id")
+        if not isinstance(got_run_id, str) or not got_run_id.strip():
+            reasons.append(
+                "run_id missing - cannot prove this result was written by this run"
+            )
+        elif got_run_id != expect_run_id:
+            reasons.append(
+                "run_id mismatch: result belongs to %r, this run is %r - "
+                "leftover output is not evidence" % (got_run_id, expect_run_id)
+            )
 
     if str(data["finished_at"]) <= str(data["started_at"]):
         reasons.append("finished_at is not later than started_at")

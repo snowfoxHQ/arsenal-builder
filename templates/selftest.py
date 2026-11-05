@@ -66,6 +66,30 @@ if cmd == "rm":
     sys.exit(0)
 
 if cmd == "exec":
+    # Behave like a compliant agent: copy the run id out of the rendered
+    # prompt into result.json, unless the scenario staged a deviation
+    # (nonce_mode = "wrong" | "omit").
+    import re
+
+    prompt = args[args.index("-p") + 1] if "-p" in args else ""
+    match = re.search(r'"run_id":\s*"([^"]*)"', prompt)
+    rpath = os.path.join(state, "files", "result.json")
+    mode = read("nonce_mode").strip()
+    if os.path.exists(rpath):
+        try:
+            with open(rpath, "r", encoding="utf-8") as fh:
+                data = json.loads(fh.read())
+            if isinstance(data, dict):
+                if mode == "omit":
+                    data.pop("run_id", None)
+                elif mode == "wrong":
+                    data["run_id"] = "19700101-000000-stale"
+                elif match:
+                    data["run_id"] = match.group(1)
+                with open(rpath, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(data, indent=2))
+        except Exception:
+            pass
     blob = os.path.join(state, "exec.bin")
     if os.path.exists(blob):
         with open(blob, "rb") as fh:
@@ -145,7 +169,7 @@ def build_workspace(root):
 
 
 def reset_state(state):
-    for name in ("exists", "exec.rc", "exec.bin", "workspace"):
+    for name in ("exists", "exec.rc", "exec.bin", "workspace", "nonce_mode"):
         path = os.path.join(state, name)
         if os.path.exists(path):
             os.unlink(path)
@@ -346,7 +370,10 @@ def check_prompt_rendered(_run_dir=None):
     cfg = dict(runner.DEFAULT_CONFIG)
     cfg["project_dir"] = "C:/demo/repo"
     cfg["prompt_file"] = os.path.join(runner.BASE_DIR, "PROMPT.md")
+    cfg["run_id"] = "20260101-090000"
     text = runner.build_prompt(cfg)
+    if "20260101-090000" not in text:
+        return False, "the run id did not reach the prompt - the freshness nonce is dead"
     if "{{" in text or "}}" in text:
         left = sorted({part.strip() for part in text.split("{{")[1:]})
         return False, "unresolved placeholder(s): %s" % ", ".join(
@@ -509,6 +536,24 @@ benchmarked because their dependencies are absent.
 """
 
 SCENARIOS = [
+    {
+        "name": "stale result rejected",
+        "setup": lambda s: (
+            open(os.path.join(s, "nonce_mode"), "w").write("wrong"),
+            stage(s, make_result(), 0, b""),
+        ),
+        "expect": 1,
+        "why": "a result.json left by an earlier run must never count as this run's verdict",
+    },
+    {
+        "name": "run_id omitted rejected",
+        "setup": lambda s: (
+            open(os.path.join(s, "nonce_mode"), "w").write("omit"),
+            stage(s, make_result(), 0, b""),
+        ),
+        "expect": 1,
+        "why": "a result that cannot prove which run wrote it proves nothing",
+    },
     {
         "name": "clean pass",
         "setup": lambda s: stage(s, make_result(), 0, b"running 230 tests\n"),

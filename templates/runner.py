@@ -355,6 +355,31 @@ def write_env_file(api_key):
     return handle.name
 
 
+def clear_sandbox_out(config):
+    """Delete the sandbox's output directory before the agent runs.
+
+    A result.json left over from an earlier run is indistinguishable from this
+    run's once it sits in the same folder: same schema, plausibly the same
+    commit. The run_id nonce (enforced by the gate) is the strong guarantee;
+    this is the cheap one. Best-effort: if the clean fails, the nonce still
+    catches whatever is stale.
+    """
+    out_dir = config["sandbox_out_dir"].rstrip("/")
+    result = subprocess.run(
+        sbx_cmd(config, "exec", config["sandbox"], "rm", "-rf", out_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        log(
+            "warning: could not clear %s inside the sandbox (exit %d); the run_id "
+            "nonce still guards against stale output" % (out_dir, result.returncode)
+        )
+
+
 def build_prompt(config):
     with open(config["prompt_file"], "r", encoding="utf-8") as handle:
         template = handle.read()
@@ -365,6 +390,7 @@ def build_prompt(config):
     return (
         template.replace("{{PROJECT_PATH}}", project_in_sandbox)
         .replace("{{OUT_DIR}}", out_dir)
+        .replace("{{RUN_ID}}", str(config.get("run_id") or ""))
         .replace("{{RESULT_NAME}}", config["result_name"])
         .replace("{{REPORT_NAME}}", config["report_name"])
         .replace("{{RESULT_PATH}}", "%s/%s" % (out_dir, config["result_name"]))
@@ -686,6 +712,11 @@ def main(argv=None):
     # result.json and reported a verdict about a test it never ran.
     run_id, run_dir = make_run_dir(config["out_dir"])
     log("run directory: %s" % run_dir)
+    # The run id doubles as the freshness nonce: it is rendered into the prompt,
+    # the agent must copy it into result.json, and the gate rejects a result
+    # without the matching id - so output left by an earlier run can never be
+    # mistaken for this run's verdict.
+    config["run_id"] = run_id
 
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as handle:
         json.dump(
@@ -754,6 +785,7 @@ def main(argv=None):
                         % (config["sandbox"], attached, config["project_dir"])
                     )
 
+            clear_sandbox_out(config)
             prompt = build_prompt(config)
             env_file = write_env_file(os.environ[KEY_ENV])
             try:
@@ -771,6 +803,10 @@ def main(argv=None):
         verdict = validate(
             find_artifact(run_dir, config["result_name"]) if got_result else None,
             config.get("expect_commit"),
+            # --collect is explicit data recovery: the run that produced the
+            # output is over, so there is no nonce to demand. Everything else
+            # must prove the result was written by this run.
+            expect_run_id=None if args.collect else run_id,
         )
     except Exception as exc:  # noqa: BLE001 - any crash still owes the host a record
         error = "%s: %s" % (type(exc).__name__, exc)
@@ -868,6 +904,11 @@ def main(argv=None):
         ),
         "result_fetched": got_result,
         "report_fetched": got_report,
+        "run_id": run_id,
+        # False when --collect skipped the agent: freshness was not proven.
+        "run_id_verified": bool(
+            not args.collect and verdict.data and verdict.data.get("run_id") == run_id
+        ),
         "report_ok": not report_problems,
         "report_depth": config.get("report_depth"),
         "report_problems": report_problems,

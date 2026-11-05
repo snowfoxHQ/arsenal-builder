@@ -22,6 +22,11 @@
       "minLength": 1,
       "description": "Project name or identifier."
     },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Freshness nonce handed to the agent in the prompt. The host rejects a result whose run_id does not match the current run - output left by an earlier run is not evidence."
+    },
     "commit": {
       "type": "string",
       "minLength": 1,

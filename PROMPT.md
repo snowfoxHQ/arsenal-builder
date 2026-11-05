@@ -125,6 +125,7 @@ any verdict wording - the host owns the verdict. See the hard rules.
 ```json
 {
   "project": "vecRecall",
+  "run_id": "{{RUN_ID}}",
   "commit": "7f3a2c9",
   "started_at": "2026-10-26T18:00:00+08:00",
   "finished_at": "2026-10-26T18:12:31+08:00",
@@ -136,6 +137,9 @@ any verdict wording - the host owns the verdict. See the hard rules.
 }
 ```
 
+- `run_id` must be exactly `{{RUN_ID}}`, copied verbatim. It is this run's
+  identity: the host rejects any result whose `run_id` does not match, because
+  a file left over from an earlier run proves nothing about this one.
 - `total`, `passed`, `failed`, `skipped` are integers and must satisfy
   `passed + failed + skipped == total`.
 - `blocked` is an array of short strings, written in the report language; empty

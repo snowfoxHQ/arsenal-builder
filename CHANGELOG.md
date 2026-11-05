@@ -107,8 +107,8 @@ v1 的 `templates/` 与 v2 不兼容：`assert_report.py` 没有了，改为 `ru
 **`sbx rm` 缺 `--force`，双击运行时必然卡死（阻断级）**
 
 - `runner.py:remove_sandbox()` 调用 `sbx rm <name>` 不带 `--force`。
-  官方 `sbx rm --help` 原文：“Removal requires confirmation; use `--force` to skip
-  confirmation prompts (for non-interactive scripts)”。
+  官方 `sbx rm --help` 原文："Removal requires confirmation; use `--force` to skip
+  confirmation prompts (for non-interactive scripts)"。
 - 双击 `.bat` 时 stdin 是真控制台但无人输入 → 卡在确认提示上，流水线不动、也不报错。
 - 已改为 `sbx rm --force <name>`。
 - 另：`config.json` 的 `sandbox` 改为 `arsenal-test`、`recreate` 改为 `false`。
@@ -524,3 +524,30 @@ Agent 严格照做，所以只给了这三样。v2 重写时全部精力都在�
 
 **没有改的**：`templates/*.py`、`PROMPT.md`、json 配置、CHANGELOG 历史条目；
 selftest 仍 21/21 ok。
+
+## v3.1.0 — 2026-11-05
+
+**陈旧产物防线（run_id nonce）。** 2026-11-05 实测踩坑：agent 因 API key 失效
+196 秒即崩、什么都没写，runner 仍从沙箱 `/tmp/arsenal-out` "回收"了 10 月 26 日
+的 result.json + report.md，且 commit 相同、`expect_commit` 为空——若 agent 恰好
+退出 0，旧产物会被当成新结果判 PASS。
+
+双保险：
+
+1. **执行前清场**：runner 在驱动 agent 前先 `sbx exec <sbx> rm -rf <sandbox_out_dir>`
+   （best-effort，失败只告警）。
+2. **run_id nonce（强保证）**：run_id 渲染进 prompt（`{{RUN_ID}}`），要求 agent
+   原样回显进 result.json；`arsenal_contract.validate()` 新增第三参数
+   `expect_run_id`，缺失或不符 → FAIL。`--collect` 模式显式豁免（数据恢复本就
+   不属于本次运行），summary.json 记 `run_id_verified: false` 让下游知道未验。
+
+配套：PROMPT.md 结果契约加 `run_id` 字段；result.schema.json 补说明；
+summary.json 新增 `run_id` / `run_id_verified`。
+
+selftest：假 sbx 的 exec 分支改为模拟合规 agent（从渲染后 prompt 里取 run_id
+回写 result.json），支持 `nonce_mode=wrong/omit` 两种偏差；新增
+「stale result rejected」「run_id omitted rejected」两场景，共 **23** 个。
+install.bat 去掉会漂移的「19 scenarios」硬编码。
+
+实测：selftest 23/23 ok；真机全流水线（vecRecall，agent 正确回显 run_id）→
+BLOCKED(exit 3)，`run_id_verified: true`。
