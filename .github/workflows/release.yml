@@ -1,0 +1,55 @@
+name: release
+
+# Tag -> zip -> GitHub Release. Two fail-closed rules before anything ships:
+#   1. the self-test must be green on the exact commit being tagged;
+#   2. RUNNER_VERSION must equal the tag - a release whose number disagrees
+#      with its own manifest is the same drift the project fights everywhere.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Windows on purpose: it is the platform the package is verified on, so
+    # "green here" means green where the gate actually runs.
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gate before shipping
+        run: python templates/selftest.py
+
+      - name: Version must match the tag
+        shell: pwsh
+        run: |
+          $ver = python -c "import re;print(re.search(r'RUNNER_VERSION = \"([^\"]+)\"', open('templates/runner.py',encoding='utf-8').read()).group(1))"
+          if ($env:GITHUB_REF_NAME -ne "v$ver") {
+            Write-Error "tag $env:GITHUB_REF_NAME does not match RUNNER_VERSION $ver"
+            exit 1
+          }
+          echo "version: $ver"
+
+      - name: Build the dist zip and notes
+        run: python scripts/make_dist.py --notes release-notes.md
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*.zip).FullName `
+            --title $env:GITHUB_REF_NAME `
+            --notes-file release-notes.md `
+            --verify-tag

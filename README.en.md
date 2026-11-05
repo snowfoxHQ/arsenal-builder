@@ -1,4 +1,4 @@
-# AI Arsenal Builder 3.3.3 — Full Manual
+# AI Arsenal Builder 3.4.0 — Full Manual
 
 [![selftest](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml/badge.svg)](https://github.com/snowfoxHQ/arsenal-builder/actions/workflows/selftest.yml)
 

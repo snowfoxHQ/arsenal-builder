@@ -743,3 +743,26 @@ basic 忽略日志），三套件全绿。config.example.json 补齐全部新键
 | main + 重建沙箱 | **PASS(0)**，19/19 |
 | regression，沙箱停在旧 HEAD（不重建） | **FAIL(1)**，`commit mismatch: got d0ffef6…, expected 5f485db…` |
 | regression + `--recreate` | **FAIL(1)**，19 中 1 失败（真实测试失败） |
+
+## v3.4.0 — 2026-11-05
+
+**门禁的自证：CI 上线 + 发版自动化。** 包第一次做到"任何 push 重证 37 场景、
+任何 tag 自动产出可验证的发布物"。
+
+### CI（.github/workflows/selftest.yml）
+
+- windows-latest 阻断：每次 push / PR 全量自检，37 场景 + 四套件。
+- ubuntu 非阻断：阶段二的信号源。首跑即报真缺口——
+  `in_sandbox_path('C:\x\y')` 在 Linux 下没做盘符转换。
+- **不需要"缺沙箱即跳过"**：自检驱动假后端，CI 里没有真沙箱也跑全量。
+- 阻断力实证：临时把 `validate()` 改成恒真 → CI 红（run 42003853206），
+  revert 后绿（run 42003978137）。判定逻辑坏了必须红，
+  不只是代码崩溃才红。
+
+### 发版（.github/workflows/release.yml + scripts/make_dist.py）
+
+- tag `v*` → 自检必须绿 → `RUNNER_VERSION` 必须等于 tag（拒绝版本漂移）
+  → 确定性打包（排序条目、固定时间戳、整树遍历）→ GitHub Release 附件。
+- 旧 dist zip 由手写文件清单生成，悄悄漏过文件（连 `.gitignore` 都没有）；
+  现在树就是清单，排除项显式声明。
+- 工作台 `dist\` 的存量 zip 降级为历史存档，新版本只走 Releases。

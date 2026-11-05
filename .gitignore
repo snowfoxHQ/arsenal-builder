@@ -3,4 +3,5 @@ var/
 __pycache__/
 *.pyc
 .codebuddy/
+dist/
 
