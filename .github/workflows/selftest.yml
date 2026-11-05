@@ -1,0 +1,41 @@
+name: selftest
+
+# The gate's own discipline, applied to the gate: every push re-proves the
+# 37 scenarios on a machine that has never seen this project. No sandbox is
+# needed - the self-test drives fake backends (fake_sbx / fake docker), which
+# is also why contract bugs in argv only surface here if the fakes are picky.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    name: selftest (windows)
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the self-test (fake backends, no sandbox required)
+        run: python templates/selftest.py
+
+  posix:
+    name: selftest (ubuntu, signal only)
+    runs-on: ubuntu-latest
+    # Phase 2 (POSIX launcher) needs this signal; until then it must not
+    # gate a release, so it stays non-blocking and visible.
+    continue-on-error: true
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the self-test
+        run: python templates/selftest.py
