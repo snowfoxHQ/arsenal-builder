@@ -19,15 +19,18 @@ Exit codes are the only signal that matters downstream. Prose is not parsed.
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
 import time
 
 from arsenal_contract import Verdict, load_json, validate
+from backends import BackendError, BackendUnavailable, get_backend
 
 DEFAULT_CONFIG = {
+    # Which sandbox backend drives the run. "sbx" is the reference
+    # implementation (see backends/); the runner itself only knows the
+    # five-capability contract, never a vendor name.
+    "backend": "sbx",
     "sandbox": "test-sandbox",
     # Deliberately empty: there is no sensible default for "the project to test".
     # preflight() refuses to run until this is set to a real git repository root.
@@ -143,21 +146,6 @@ def resolve_from_home(path, home):
     return os.path.normpath(path if os.path.isabs(path) else os.path.join(home, path))
 
 
-def sbx_cmd(config, *args):
-    """Build an sbx invocation. sbx_bin may be a string or a list (for tests)."""
-    binary = config["sbx_bin"]
-    prefix = list(binary) if isinstance(binary, (list, tuple)) else [binary]
-    return prefix + list(args)
-
-
-def to_sandbox_path(host_path):
-    """C:\\ai-arsenal\\x -> /c/ai-arsenal/x (sbx keeps host paths in the microVM)."""
-    path = os.path.abspath(host_path).replace("\\", "/")
-    if len(path) > 1 and path[1] == ":":
-        return "/" + path[0].lower() + path[2:]
-    return path
-
-
 def save_config(config, path):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2, ensure_ascii=False)
@@ -168,15 +156,16 @@ def preflight(config):
     """Return a list of fatal problems. Empty list means go."""
     problems = []
 
-    binary = config["sbx_bin"]
-    probe = binary[0] if isinstance(binary, (list, tuple)) else binary
-    if os.path.isabs(probe) or os.sep in probe or "/" in probe:
-        if not os.path.exists(probe):
-            problems.append("sbx binary not found: %s" % probe)
-    elif shutil.which(probe) is None:
-        problems.append(
-            "sbx not on PATH. Install the standalone sbx CLI (MSI) and reopen the shell."
-        )
+    try:
+        backend = get_backend(config)
+    except BackendError as exc:
+        problems.append(str(exc))
+        return problems
+
+    try:
+        backend.probe()
+    except BackendError as exc:
+        problems.append(str(exc))
 
     if not os.environ.get(KEY_ENV):
         problems.append(
@@ -215,8 +204,11 @@ def preflight(config):
     # number in the report would be real, just not about this project. Check it
     # here, which means --dry-run catches it too, instead of finding out from a
     # report nobody questions.
-    if mode == "clone" and project_dir and sandbox_exists(config):
-        attached = sandbox_workspace(config)
+    if mode == "clone" and project_dir and backend.exists():
+        try:
+            attached = backend.binding()
+        except BackendError:
+            attached = None
         if attached is None:
             # Cannot tell which tree it is bound to. Not fatal - an unreadable
             # listing is usually a sleeping Docker daemon - but say so, because
@@ -235,107 +227,12 @@ def preflight(config):
     return problems
 
 
-def sandbox_exists(config):
-    try:
-        result = subprocess.run(
-            sbx_cmd(config, "ls"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError as exc:
-        log("could not list sandboxes: %s" % exc)
-        return False
-
-    name = config["sandbox"]
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if fields and fields[0] == name:
-            return True
-    return False
-
-
-def list_sandboxes(config):
-    """Structured `sbx ls`, so the workspace path can be compared, not guessed.
-
-    The table output is ambiguous the moment a path contains a space, and one of
-    the paths here does (`Documents\\技能插件库\\...`), so ask for JSON.
-    """
-    try:
-        result = subprocess.run(
-            sbx_cmd(config, "ls", "--format", "json"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        data = json.loads(result.stdout)
-    except Exception:  # noqa: BLE001 - a listing we cannot read must not crash a run
-        return []
-    return data if isinstance(data, list) else []
-
-
-def sandbox_workspace(config):
-    """The host directory this sandbox was created against, or None."""
-    for entry in list_sandboxes(config):
-        if isinstance(entry, dict) and entry.get("name") == config["sandbox"]:
-            workspaces = entry.get("workspaces") or []
-            if workspaces:
-                return str(workspaces[0])
-    return None
-
-
 def same_path(left, right):
     if not left or not right:
         return False
     return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
         os.path.normpath(right)
     )
-
-
-def remove_sandbox(config):
-    log("removing sandbox %s" % config["sandbox"])
-    # --force is mandatory here: `sbx rm` otherwise waits for an interactive
-    # confirmation, which deadlocks a double-clicked .bat (stdin is a console
-    # nobody is typing into). Verified against `sbx rm --help`.
-    subprocess.run(
-        sbx_cmd(config, "rm", "--force", config["sandbox"]),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-
-def create_sandbox(config):
-    name = config["sandbox"]
-    mode = str(config["workspace_mode"]).lower()
-    project = os.path.abspath(config["project_dir"])
-
-    cmd = sbx_cmd(config, "create", "--name", name)
-    if mode == "clone":
-        cmd.append("--clone")
-    cmd += ["claude", project]
-
-    log("creating sandbox %s (%s mode)" % (name, mode))
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.stdout.strip():
-        print(result.stdout, end="", flush=True)
-    if result.returncode != 0:
-        log("sbx create failed with exit code %d" % result.returncode)
-        return False
-    return True
 
 
 def write_env_file(api_key):
@@ -355,36 +252,11 @@ def write_env_file(api_key):
     return handle.name
 
 
-def clear_sandbox_out(config):
-    """Delete the sandbox's output directory before the agent runs.
-
-    A result.json left over from an earlier run is indistinguishable from this
-    run's once it sits in the same folder: same schema, plausibly the same
-    commit. The run_id nonce (enforced by the gate) is the strong guarantee;
-    this is the cheap one. Best-effort: if the clean fails, the nonce still
-    catches whatever is stale.
-    """
-    out_dir = config["sandbox_out_dir"].rstrip("/")
-    result = subprocess.run(
-        sbx_cmd(config, "exec", config["sandbox"], "rm", "-rf", out_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
-        log(
-            "warning: could not clear %s inside the sandbox (exit %d); the run_id "
-            "nonce still guards against stale output" % (out_dir, result.returncode)
-        )
-
-
-def build_prompt(config):
+def build_prompt(config, backend):
     with open(config["prompt_file"], "r", encoding="utf-8") as handle:
         template = handle.read()
 
-    project_in_sandbox = to_sandbox_path(config["project_dir"])
+    project_in_sandbox = backend.in_sandbox_path(config["project_dir"])
     out_dir = config["sandbox_out_dir"].rstrip("/")
 
     return (
@@ -406,45 +278,10 @@ def depth_text(depth):
     return REPORT_DEPTH_TEXT.get(str(depth or "").strip().lower(), REPORT_DEPTH_TEXT["full"])
 
 
-def run_in_sandbox(config, prompt, env_file, log_path):
-    cmd = sbx_cmd(
-        config,
-        "exec",
-        "--env-file",
-        env_file,
-        config["sandbox"],
-        "claude",
-        "-p",
-        prompt,
-        "--dangerously-skip-permissions",
-    )
-
-    log("executing tests inside %s" % config["sandbox"])
-    started = time.time()
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,  # never wait on a console nobody is typing into
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",  # a stray GBK byte must never crash the pipeline
-    )
-    # Tee to disk as well as to the console. If the window is closed or the
-    # process is killed mid-run, this file is the only record of what the agent
-    # actually said - without it the run leaves an empty directory behind.
-    with open(log_path, "w", encoding="utf-8") as log_file:
-        log_file.write("[arsenal] agent output for sandbox %s\n" % config["sandbox"])
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            log_file.write(line)
-            log_file.flush()
-        proc.wait()
-        log_file.write("\n[arsenal] agent exit code %d\n" % proc.returncode)
-    elapsed = int(time.time() - started)
-    log("agent finished in %ds with exit code %d" % (elapsed, proc.returncode))
-    return proc.returncode
+def run_agent_command(prompt):
+    """The agent invocation, identical for every backend: the policy lives
+    here, the mechanics of executing it live in the backend."""
+    return ["claude", "-p", prompt, "--dangerously-skip-permissions"]
 
 
 def find_artifact(run_dir, name):
@@ -458,7 +295,7 @@ def find_artifact(run_dir, name):
     return direct
 
 
-def fetch_outputs(config, run_dir):
+def fetch_outputs(config, run_dir, backend):
     """Pull the whole sandbox output directory back to the host.
 
     Copying the directory (instead of two hard-coded filenames) is the point:
@@ -466,22 +303,14 @@ def fetch_outputs(config, run_dir):
     dumps - comes home automatically, and nothing is silently dropped because
     the host was not told its name in advance.
     """
-    remote = "%s:%s" % (config["sandbox"], config["sandbox_out_dir"].rstrip("/"))
+    out_dir = config["sandbox_out_dir"].rstrip("/")
     local_dir = os.path.join(run_dir, "sandbox")
     os.makedirs(local_dir, exist_ok=True)
 
-    result = subprocess.run(
-        sbx_cmd(config, "cp", remote, local_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
+    if not backend.fetch_dir(out_dir, local_dir):
         log("directory copy failed, falling back to single-file fetch")
         for name in (config["result_name"], config["report_name"]):
-            fetch_file(config, name, os.path.join(run_dir, name))
+            backend.fetch_file(out_dir, name, os.path.join(run_dir, name))
 
     got_result = os.path.isfile(find_artifact(run_dir, config["result_name"]))
     got_report = os.path.isfile(find_artifact(run_dir, config["report_name"]))
@@ -601,25 +430,6 @@ def make_run_dir(out_dir, when=None):
         suffix += 1
     os.makedirs(run_dir, exist_ok=False)
     return run_id, run_dir
-
-
-def fetch_file(config, remote_name, local_path):
-    source = "%s:%s/%s" % (
-        config["sandbox"],
-        config["sandbox_out_dir"].rstrip("/"),
-        remote_name,
-    )
-    result = subprocess.run(
-        sbx_cmd(config, "cp", source, local_path),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
-        return False
-    return os.path.isfile(local_path)
 
 
 def main(argv=None):
@@ -748,36 +558,44 @@ def main(argv=None):
     # process, a sandbox that never starts. The run directory must still end up
     # with a summary.json, otherwise the host is left holding an empty folder
     # and no way to tell "nothing happened" from "it worked and I lost the data".
+    # Preflight already validated the backend; building it again here cannot
+    # fail, and both the agent path and artifact recovery go through it.
+    backend = get_backend(config)
+
     try:
         if args.collect:
             # Data recovery, not a test run: the agent already finished, the
             # output is still sitting in the sandbox, and re-running it would
             # cost tokens for a result we can simply pick up.
-            if not sandbox_exists(config):
+            if not backend.exists():
                 raise RuntimeError(
                     "--collect needs an existing sandbox named %r" % config["sandbox"]
                 )
             log("collect mode: pulling existing output from %s" % config["sandbox"])
-            attached = sandbox_workspace(config)
+            attached = backend.binding()
             if attached and not same_path(attached, config["project_dir"]):
                 log(
                     "warning: this sandbox is attached to %s, not to project_dir %s"
                     % (attached, config["project_dir"])
                 )
         else:
-            if config.get("recreate") and sandbox_exists(config):
-                remove_sandbox(config)
+            if config.get("recreate") and backend.exists():
+                backend.remove()
 
-            if not sandbox_exists(config):
-                if not create_sandbox(config):
-                    raise RuntimeError("sbx create failed - see the output above")
+            if not backend.exists():
+                log(
+                    "creating sandbox %s (%s mode)"
+                    % (config["sandbox"], config["workspace_mode"])
+                )
+                if not backend.create():
+                    raise RuntimeError("sandbox create failed - see the output above")
             else:
                 log("reusing existing sandbox %s" % config["sandbox"])
                 # A sandbox is bound to one host directory for its whole life.
                 # Reusing one that was cloned from a different project silently
                 # tests the wrong tree - which is exactly how a run once reported
                 # on sandbox-workspaces/vecRecall instead of the project asked for.
-                attached = sandbox_workspace(config)
+                attached = backend.binding()
                 if attached and not same_path(attached, config["project_dir"]):
                     raise RuntimeError(
                         "sandbox %r is attached to %s, but project_dir is %s - "
@@ -785,18 +603,30 @@ def main(argv=None):
                         % (config["sandbox"], attached, config["project_dir"])
                     )
 
-            clear_sandbox_out(config)
-            prompt = build_prompt(config)
+            # Cheap half of the freshness guarantee: no leftover output can be
+            # fetched back if the folder is empty before the agent starts. The
+            # strong half is the run_id nonce, checked by the gate below.
+            out_dir = config["sandbox_out_dir"].rstrip("/")
+            if not backend.clear_dir(out_dir):
+                log(
+                    "warning: could not clear %s inside the sandbox; the run_id "
+                    "nonce still guards against stale output" % out_dir
+                )
+
+            prompt = build_prompt(config, backend)
             env_file = write_env_file(os.environ[KEY_ENV])
             try:
-                agent_code = run_in_sandbox(config, prompt, env_file, agent_log)
+                log("executing tests inside %s" % config["sandbox"])
+                agent_code = backend.exec_agent(
+                    run_agent_command(prompt), env_file, agent_log
+                )
             finally:
                 try:
                     os.unlink(env_file)
                 except OSError:
                     pass
 
-        got_result, got_report = fetch_outputs(config, run_dir)
+        got_result, got_report = fetch_outputs(config, run_dir, backend)
         log("result.json: %s" % ("fetched" if got_result else "MISSING"))
         log("report.md:   %s" % ("fetched" if got_report else "MISSING"))
 

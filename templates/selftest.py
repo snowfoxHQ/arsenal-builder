@@ -367,11 +367,14 @@ def check_prompt_rendered(_run_dir=None):
     called {{RESULT_PATH}}, and the host then declares the run failed for a
     result that was written exactly where it was told to write it.
     """
+    from backends import get_backend
+
     cfg = dict(runner.DEFAULT_CONFIG)
     cfg["project_dir"] = "C:/demo/repo"
     cfg["prompt_file"] = os.path.join(runner.BASE_DIR, "PROMPT.md")
     cfg["run_id"] = "20260101-090000"
-    text = runner.build_prompt(cfg)
+    backend = get_backend(cfg)
+    text = runner.build_prompt(cfg, backend)
     if "20260101-090000" not in text:
         return False, "the run id did not reach the prompt - the freshness nonce is dead"
     if "{{" in text or "}}" in text:
@@ -383,10 +386,92 @@ def check_prompt_rendered(_run_dir=None):
         return False, "report_language is empty"
     if "Report depth:" not in text:
         return False, "the rendered prompt does not tell the agent how much to write"
-    brief = runner.build_prompt(dict(cfg, report_depth="brief"))
+    brief = runner.build_prompt(dict(cfg, report_depth="brief"), backend)
     if "Report depth: **brief**" not in brief:
         return False, "report_depth=brief does not reach the prompt"
     return True, ""
+
+
+def run_backend_contracts(fake_cli):
+    """Every backend must satisfy the same capability contract.
+
+    The checks are written against the contract, not against sbx: when a new
+    backend and its fake driver land (docker, none), they join the loop below
+    and must pass unchanged. This is what keeps "sandbox-agnostic" from
+    decaying into docs-only.
+    """
+    from backends import BackendError, get_backend
+
+    problems = []
+    try:
+        get_backend({"backend": "teleport"})
+        problems.append("an unknown backend name was accepted")
+    except BackendError:
+        pass
+
+    # Extend this list together with backends/__init__.py: each entry needs a
+    # fake CLI driver that speaks the backend's command syntax.
+    for backend_name, state_env in (("sbx", "FAKE_SBX_STATE"),):
+        root = tempfile.mkdtemp(prefix="arsenal-backend-%s-" % backend_name)
+        previous = os.environ.get(state_env)
+        try:
+            state = os.path.join(root, "state")
+            os.makedirs(os.path.join(state, "files"), exist_ok=True)
+            os.environ[state_env] = state
+            cfg = {
+                "backend": backend_name,
+                "sandbox": "test-sandbox",
+                "project_dir": os.path.join(root, "proj"),
+                "workspace_mode": "clone",
+                "sandbox_out_dir": "/tmp/arsenal-out",
+                "sbx_bin": [sys.executable, fake_cli],
+            }
+            backend = get_backend(cfg)
+
+            try:
+                backend.probe()
+            except BackendError as exc:
+                problems.append("[%s] probe rejected a present binary: %s" % (backend_name, exc))
+
+            missing = get_backend(
+                dict(cfg, sbx_bin=os.path.join(root, "no-such-backend.exe"))
+            )
+            try:
+                missing.probe()
+                problems.append("[%s] probe accepted a missing binary" % backend_name)
+            except BackendError:
+                pass
+
+            if backend.exists():
+                problems.append("[%s] exists() is true for an empty listing" % backend_name)
+            open(os.path.join(state, "exists"), "w").close()
+            with open(os.path.join(state, "workspace"), "w", encoding="utf-8") as fh:
+                fh.write("C:/some/host/dir")
+            if not backend.exists():
+                problems.append("[%s] exists() missed a marked instance" % backend_name)
+            if backend.binding() != "C:/some/host/dir":
+                problems.append(
+                    "[%s] binding() returned %r" % (backend_name, backend.binding())
+                )
+
+            got = backend.in_sandbox_path("C:\\x\\y")
+            if got != "/c/x/y":
+                problems.append("[%s] in_sandbox_path returned %r" % (backend_name, got))
+
+            if backend.fetch_file(
+                "/tmp/arsenal-out", "absent.json", os.path.join(root, "out.bin")
+            ):
+                problems.append(
+                    "[%s] fetch_file claimed success for a missing file" % backend_name
+                )
+        finally:
+            if previous is None:
+                os.environ.pop(state_env, None)
+            else:
+                os.environ[state_env] = previous
+            shutil.rmtree(root, ignore_errors=True)
+
+    return (not problems, "; ".join(problems))
 
 
 # Two report shapes. The thin one is what the pipeline actually produced for a
@@ -772,10 +857,24 @@ def main():
                     print("    | %s" % line)
 
         print("-" * 72)
+        contract_ok, contract_detail = run_backend_contracts(
+            os.path.join(root, "fake_sbx.py")
+        )
+        if not contract_ok:
+            failures += 1
+            print("%-22s %-8s %-8s %s" % ("backend contracts", "pass", "fail", "MISMATCH"))
+            for line in contract_detail.split("; "):
+                print("    %s" % line)
+        else:
+            print("%-22s %-8s %-8s %s" % ("backend contracts", "pass", "pass", "ok"))
+        print("-" * 72)
         if failures:
             print("%d scenario(s) MISMATCH - the gate is not trustworthy." % failures)
             return 1
-        print("all %d scenarios ok - the gate fails closed." % len(SCENARIOS))
+        print(
+            "all %d scenarios + backend contracts ok - the gate fails closed."
+            % len(SCENARIOS)
+        )
         return 0
     finally:
         if previous_key is None:

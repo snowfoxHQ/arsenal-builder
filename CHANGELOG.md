@@ -551,3 +551,22 @@ install.bat 去掉会漂移的「19 scenarios」硬编码。
 
 实测：selftest 23/23 ok；真机全流水线（vecRecall，agent 正确回显 run_id）→
 BLOCKED(exit 3)，`run_id_verified: true`。
+
+## v3.1.1 — 2026-11-05
+
+**沙箱无关第一步：sbx 从「依赖」降级为「适配器」。**
+
+- 新增 `templates/backends/` 包：五能力契约（probe / exists+binding /
+  create+remove / in_sandbox_path+clear_dir+exec_agent / fetch_dir+fetch_file）
+  + `SbxBackend` 参考实现（原 runner 里的 sbx 专有代码整体迁入，行为不变）。
+- `runner.py` 不再出现任何 sbx 专有调用；新增 `backend` 配置项（默认 `"sbx"`，
+  旧配置不写此键行为不变），未知后端名 → 退出码 2。
+- agent 命令策略（`claude -p ... --dangerously-skip-permissions`）留在 runner
+  （`run_agent_command`），执行机制归后端——判定策略与执行机制分家。
+- selftest 新增**后端契约套件**：对每个后端跑同一组检查（probe 拒绝缺失二进制、
+  exists/binding 对结构化列表、in_sandbox_path 路径转换、fetch_file 对缺失文件
+  返回 False）。新后端加入 `backends/__init__.py` 时必须同时进契约套件，
+  「沙箱无关」不靠文档靠测试。
+
+实测：selftest 23 场景 + 后端契约全绿；真机 dry-run exit 0、全流水线
+BLOCKED(exit 3)，执行/清场/回收路径全部走新后端。
