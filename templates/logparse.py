@@ -7,9 +7,11 @@ Only standard formats are understood - a self-written harness whose output
 nothing can parse simply produces no evidence, and precision=standard then
 cross-checks only what exists. Absence of evidence is not evidence of fraud.
 
-Conservative by design: every mismatch becomes a *suspect* (an unverified
-warning -> the run is BLOCKED, not PASS), never a FAIL on its own - a parser
-that misreads an exotic log format must not brand an honest run broken.
+Conservative by design: mismatches become *suspects*. Under
+precision=standard a suspect demotes PASS to BLOCKED - a parser that
+misreads an exotic log format must not brand an honest run broken. Under
+precision=strict the buyer knows the price: the claim must survive the
+evidence, so a suspect fails the run outright.
 """
 
 import os

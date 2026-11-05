@@ -679,3 +679,20 @@ basic 忽略日志），三套件全绿。config.example.json 补齐全部新键
   而非副作用。
 - selftest 新增 endpoint config 套件（默认值未漂移 + 配置覆盖真实到达
   env 文件）。33 场景 + 四套件全绿。
+
+## v3.3.2 — 2026-11-05
+
+**strict 档启用 + 支付宝三件套出包。**
+
+- `precision: strict` 从留位转正：suspect 直接 **FAIL**（不再是 BLOCKED），
+  且新增一条 strict 专属证据要求——申报 passed > 0 但收回的
+  `logs/test*.log` 没有一个可解析 → 同样 FAIL。「判定只吃结构化证据」在
+  strict 档是明码标价：harness 输出格式不可解析的项目，strict 档本来就
+  不可用——这就是该档位的定义。basic / standard 行为不变。
+- 支付宝三件套（`pay-service/`、`alipay-aipay/`、`scripts/arsenal-paid.mjs`）
+  `git mv` 到仓库根 `payments/`，124 个文件随历史迁移。Skill 包恢复纯度：
+  从此 dist 清单外的任何东西进不了包。SKILL.md / SKILL.zh-CN.md 的引用
+  路径同步更新；`arsenal-paid.mjs` 只用相对路径，无需改码。SKILL 文档中
+  「门禁点位于 runner.py 最前面」仍为规划态描述（门禁未接线，本次不动）。
+- selftest：36 场景（新增 strict 假绿 FAIL / 无证据 FAIL / 证据一致
+  PASS）+ 四套件全绿。

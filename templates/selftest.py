@@ -1217,6 +1217,36 @@ SCENARIOS = [
         "why": "precision=basic keeps the classic gate - no log forensics",
         "config": {"precision": "basic"},
     },
+    {
+        "name": "strict: false green fails",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "Ran 230 tests in 1.2s\nFAILED (failures=7)\n"),
+        ),
+        "expect": 1,
+        "why": "strict: the claim must survive the evidence - suspects FAIL",
+        "config": {"precision": "strict"},
+    },
+    {
+        "name": "strict: unevidenced claim fails",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "benchmark: 76.2% recall, p50 41ms, p99 380ms\n"),
+        ),
+        "expect": 1,
+        "why": "strict: a positive claim with no parseable suite log is a failure, not a pass",
+        "config": {"precision": "strict"},
+    },
+    {
+        "name": "strict: consistent logs pass",
+        "setup": lambda s: (
+            stage(s, make_result(), 0, b""),
+            _stage_log(s, "test_core.log", "Ran 230 tests in 1.2s\nOK\n"),
+        ),
+        "expect": 0,
+        "why": "strict is not a gauntlet - evidence that agrees passes cleanly",
+        "config": {"precision": "strict"},
+    },
 ]
 
 

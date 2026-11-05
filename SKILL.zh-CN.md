@@ -343,7 +343,8 @@ sbx 沙箱测试。
 npx -y @alipay/agent-payment@latest install
 ```
 
-**调用流程**（`scripts/arsenal-paid.mjs` 三个本地子命令）：
+**调用流程**（`../../payments/scripts/arsenal-paid.mjs` 三个本地子命令，
+支付侧整体位于仓库根的 `payments/`，不在 Skill 包内）：
 
 ```
 probe    → 请求资源接口；未付款时预期 HTTP 402 + `Payment-Needed` 响应头，
@@ -361,8 +362,8 @@ complete → 付款后按 `out_shake_no` 查询**原订单**，继续原始资�
 
 | 一侧 | 位置 | 职责 |
 | --- | --- | --- |
-| 服务端 | `pay-service/`（**独立部署**，不放入 Skill 包） | 402 账单、验付、交付资源、履约确认、订单幂等 |
-| Skill | `SKILL.md` + `scripts/arsenal-paid.mjs` | 发起请求、调用官方支付能力、展示结果 |
+| 服务端 | `payments/pay-service/`（**独立部署**，不放入 Skill 包） | 402 账单、验付、交付资源、履约确认、订单幂等 |
+| Skill | `SKILL.md`（支付客户端在 `payments/scripts/`） | 发起请求、调用官方支付能力、展示结果 |
 
 门禁点位于 `templates/runner.py` 的最前面：probe 不通过，后续全流程不执行。
 `templates/selftest.py` 保持**免费**，它是你自证门禁没被改造改坏的唯一手段。
@@ -390,19 +391,19 @@ complete → 付款后按 `out_shake_no` 查询**原订单**，继续原始资�
 **本地模拟测试**（真实付款前必做）：
 
 ```
-node scripts/arsenal-paid.mjs mock 402
-node scripts/arsenal-paid.mjs mock processing
-node scripts/arsenal-paid.mjs mock success
-node scripts/arsenal-paid.mjs mock failed
-node scripts/arsenal-paid.mjs mock retry
+node ../../payments/scripts/arsenal-paid.mjs mock 402
+node ../../payments/scripts/arsenal-paid.mjs mock processing
+node ../../payments/scripts/arsenal-paid.mjs mock success
+node ../../payments/scripts/arsenal-paid.mjs mock failed
+node ../../payments/scripts/arsenal-paid.mjs mock retry
 ```
 
-服务启动：在 `pay-service/` 下执行 `uvicorn app.main:app --host 0.0.0.0 --port 8000`，
+服务启动：在 `payments/pay-service/` 下执行 `uvicorn app.main:app --host 0.0.0.0 --port 8000`，
 然后从服务器之外验证公网端点返回 402：
 
 ```
 curl -i --connect-timeout 10 --max-time 30 'https://<你的域名>/arsenal/run'
 ```
 
-`pay-service/.alipay-sandbox.json`、`.env` 和 `var/` 一律不得入库，
+`payments/pay-service/.alipay-sandbox.json`、`.env` 和 `var/` 一律不得入库，
 也不得打进 Skill 的 zip 包。

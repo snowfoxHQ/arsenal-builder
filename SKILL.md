@@ -364,7 +364,9 @@ sbx 沙箱测试.
 npx -y @alipay/agent-payment@latest install
 ```
 
-**Call flow** (`scripts/arsenal-paid.mjs`, three local subcommands):
+**Call flow** (`../../payments/scripts/arsenal-paid.mjs`, three local
+subcommands; the payment side lives in `payments/` at the repo root, outside
+the Skill package):
 
 ```
 probe    → GET/POST the resource URL; expect HTTP 402 + `Payment-Needed`
@@ -384,8 +386,8 @@ implements signing or payment itself.
 
 | Side | Location | Responsibility |
 | --- | --- | --- |
-| Server | `pay-service/` (**deployed separately**, excluded from the Skill package) | 402 bill, verify `Payment-Proof`, deliver resource, fulfilment confirm, order idempotency |
-| Skill | `SKILL.md` + `scripts/arsenal-paid.mjs` | initiate the request, invoke the official payment CLI, display the result |
+| Server | `payments/pay-service/` (**deployed separately**, excluded from the Skill package) | 402 bill, verify `Payment-Proof`, deliver resource, fulfilment confirm, order idempotency |
+| Skill | `SKILL.md` (payment client in `payments/scripts/`) | initiate the request, invoke the official payment CLI, display the result |
 
 The gate sits at the very front of `templates/runner.py`: if `probe` does not
 resolve, nothing downstream runs. `templates/selftest.py` stays **free** — it is
@@ -414,19 +416,19 @@ how you prove the gate itself was not broken by the retrofit.
 **Local mock test** (before any real payment):
 
 ```
-node scripts/arsenal-paid.mjs mock 402
-node scripts/arsenal-paid.mjs mock processing
-node scripts/arsenal-paid.mjs mock success
-node scripts/arsenal-paid.mjs mock failed
-node scripts/arsenal-paid.mjs mock retry
+node ../../payments/scripts/arsenal-paid.mjs mock 402
+node ../../payments/scripts/arsenal-paid.mjs mock processing
+node ../../payments/scripts/arsenal-paid.mjs mock success
+node ../../payments/scripts/arsenal-paid.mjs mock failed
+node ../../payments/scripts/arsenal-paid.mjs mock retry
 ```
 
 Run the server with `uvicorn app.main:app --host 0.0.0.0 --port 8000` from
-`pay-service/`, then verify the public endpoint returns 402:
+`payments/pay-service/`, then verify the public endpoint returns 402:
 
 ```
 curl -i --connect-timeout 10 --max-time 30 'https://<your-domain>/arsenal/run'
 ```
 
-`pay-service/.alipay-sandbox.json`, `.env` and `var/` must never be committed
-or shipped inside the Skill zip.
+`payments/pay-service/.alipay-sandbox.json`, `.env` and `var/` must never be
+committed or shipped inside the Skill zip.

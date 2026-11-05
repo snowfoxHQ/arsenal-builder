@@ -49,12 +49,15 @@ DEFAULT_CONFIG = {
     # The agent writes the report in this language. Kept in config because a
     # report nobody can read is the same as no report; the gate never parses it,
     # so switching it cannot change a verdict.
-    # basic  - the classic gate: counts self-consistent, no failures, commit
-    #          matches, result fresh. Nothing else is inspected.
+    # basic    - the classic gate: counts self-consistent, no failures, commit
+    #            matches, result fresh. Nothing else is inspected.
     # standard - additionally cross-checks the claim against the raw suite
-    #          logs the run pulled back (host-side parsing, not agent prose).
-    #          Contradictions become suspects: the run is BLOCKED, not PASS.
-    # strict is reserved for a future tier that turns suspects into failures.
+    #            logs the run pulled back (host-side parsing, not agent prose).
+    #            Contradictions become suspects: the run is BLOCKED, not PASS.
+    # strict   - the claim must survive the evidence: suspects FAIL the run,
+    #            and a positive claim without parseable suite logs fails too.
+    #            For projects whose harness writes an unparseable format this
+    #            is by design unusable - that is what the tier means.
     "precision": "basic",
     # Vendor endpoint for the agent (and review.py). Switching providers is a
     # config edit on purpose - see BASE_URL above. agent_model, when set, is
@@ -92,7 +95,7 @@ EXIT_BLOCKED = 3
 
 # Kept in step with the root VERSION.txt; run_manifest.json records it so two
 # runs can be told apart by tooling, not by humans reading dates.
-RUNNER_VERSION = "3.3.1"
+RUNNER_VERSION = "3.3.2"
 
 # Config keys that describe one run rather than the environment it ran in.
 # Excluded from the fingerprint - they differ between runs on purpose.
@@ -1029,19 +1032,36 @@ def main(argv=None):
     if report_problems and args.strict_report and exit_code == EXIT_PASS:
         exit_code = EXIT_FAIL
 
-    # precision=standard: cross-check the claim against the raw suite logs the
-    # run pulled back. The host parses the logs itself - agent prose is not
-    # evidence. Suspects demote a PASS to BLOCKED (never FAIL on their own: a
-    # parser that misreads an exotic format must not brand an honest run broken).
+    # precision=standard/strict: cross-check the claim against the raw suite
+    # logs the run pulled back. The host parses the logs itself - agent prose
+    # is not evidence. standard: contradictions are suspicions, a PASS is
+    # demoted to BLOCKED (a parser that misreads an exotic format must not
+    # brand an honest run broken). strict: the claim must survive the
+    # evidence - a suspect is a failure, and a positive claim without any
+    # parseable evidence is one too.
+    precision = str(config.get("precision") or "basic").strip().lower()
     suspects = []
     if (
         not error
-        and str(config.get("precision") or "basic").strip().lower() == "standard"
+        and precision in ("standard", "strict")
         and isinstance(verdict.data, dict)
     ):
-        suspects = cross_check(parse_test_logs(run_dir), verdict.data)
+        suites = parse_test_logs(run_dir)
+        suspects = cross_check(suites, verdict.data)
+        if (
+            precision == "strict"
+            and not suspects
+            and (verdict.data.get("passed") or 0) > 0
+            and not suites
+        ):
+            suspects.append(
+                "strict requires parseable evidence under logs/test*.log, but "
+                "no suite log could be parsed - an unevidenced claim fails, "
+                "it does not pass"
+            )
         if suspects:
-            verdict.blocked_reasons.extend("suspect: %s" % s for s in suspects)
+            target = verdict.blocked_reasons if precision == "standard" else verdict.reasons
+            target.extend(suspects)
             verdict.ok = False
             if exit_code == EXIT_PASS:
                 exit_code = verdict.code
